@@ -28,19 +28,18 @@ export function createPlayerState(id: number): PlayerState {
     vehicle: -1, seat: -1, zip: -1, zipT: 0, zipV: 0,
     alive: false, coats: [], coatBy: [], upgrades: 0,
     hopper: C.HOPPER, reserve: C.RESERVE_START, reload: 0, fireCd: 0, shotSeq: 0,
-    shield: 0, deadT: 0, spawnChoices: [], spawnPick: -1, lastHitBy: -1, lastKiller: -1,
+    shield: 0, deadT: 0, lastHitBy: -1, lastKiller: -1,
     score: 0, deaths: 0, style: 0, streak: 0, lastSeq: 0,
   };
 }
 
 /** Deep copy (prediction snapshots / rollback). */
 export function copyPlayerState(src: PlayerState, dst: PlayerState): PlayerState {
-  const coats = dst.coats, coatBy = dst.coatBy, sc = dst.spawnChoices;
+  const coats = dst.coats, coatBy = dst.coatBy;
   Object.assign(dst, src);
   coats.length = 0; for (const c of src.coats) coats.push(c);
   coatBy.length = 0; for (const c of src.coatBy) coatBy.push(c);
-  sc.length = 0; for (const c of src.spawnChoices) sc.push(c);
-  dst.coats = coats; dst.coatBy = coatBy; dst.spawnChoices = sc;
+  dst.coats = coats; dst.coatBy = coatBy;
   return dst;
 }
 
@@ -50,12 +49,13 @@ export function hasUpgrade(p: PlayerState, k: PickupKind): boolean {
 
 /** Body height for the current state. */
 export function bodyHeight(move: MoveState): number {
-  return move === Move.Slide || move === Move.Dive || move === Move.Swim || move === Move.Underwater || move === Move.SteepSlide
+  return move === Move.Slide || move === Move.Dive || move === Move.Swim || move === Move.Underwater || move === Move.SteepSlide ||
+    move === Move.Glide || move === Move.Splat
     ? C.BODY_H_LOW : C.BODY_H;
 }
 
 export function eyeHeight(move: MoveState): number {
-  return move === Move.Slide || move === Move.Dive || move === Move.SteepSlide ? C.EYE_H_LOW : C.EYE_H;
+  return move === Move.Slide || move === Move.Dive || move === Move.SteepSlide || move === Move.Glide || move === Move.Splat ? C.EYE_H_LOW : C.EYE_H;
 }
 
 /** Can this state fire the marker (ignoring ammo / reload)? Vehicle seats are checked by the sim. */
@@ -370,6 +370,96 @@ function stepUnderwater(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number):
   return fx;
 }
 
+// ---------------------------------------------------------------------------
+// sky drop: flying-squirrel glide, then a splat landing
+
+/** Target (horizontal speed, sink rate) for the glide input: S flares ← neutral → W dives; Shift tucks. */
+function glideTargets(cmd: InputCmd): void {
+  const mz = clamp(cmd.moveZ, -1, 1);
+  if (cmd.buttons & Btn.Sprint) { gHs = C.GLIDE_TUCK_SPEED; gVs = C.GLIDE_TUCK_SINK; }
+  else if (mz >= 0) {
+    gHs = C.GLIDE_SPEED + (C.GLIDE_DIVE_SPEED - C.GLIDE_SPEED) * mz;
+    gVs = C.GLIDE_SINK + (C.GLIDE_DIVE_SINK - C.GLIDE_SINK) * mz;
+  } else {
+    gHs = C.GLIDE_SPEED + (C.GLIDE_FLARE_SPEED - C.GLIDE_SPEED) * -mz;
+    gVs = C.GLIDE_SINK + (C.GLIDE_FLARE_SINK - C.GLIDE_SINK) * -mz;
+  }
+}
+let gHs = 0, gVs = 0;
+
+function stepGlide(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number): number {
+  let fx = 0;
+  glideTargets(cmd);
+  // the view steers: glide along it, slip sideways with A/D
+  const sy = sin(cmd.yaw), cy = cos(cmd.yaw);
+  const mx = clamp(cmd.moveX, -1, 1) * C.GLIDE_STRAFE;
+  approach(p, sy * gHs - cy * mx, cy * gHs + sy * mx, C.GLIDE_ACCEL * dt);
+  const dv = -gVs - p.vy, a = C.GLIDE_VACCEL * dt;
+  p.vy += dv > a ? a : dv < -a ? -a : dv;
+  p.grounded = false;
+  p.sprinting = false;
+
+  const oy = p.y;
+  integrateFree(p, env, dt, C.BODY_H_LOW);
+  // touch down: on the ground (splat), a roof or slope too steep to stand on (slide off), or water (swim)
+  if (p.vy <= 0.5) {
+    let g = probeGround(env, p.x, Math.max(oy, p.y) + C.STEP_H, p.z, C.STEP_H + Math.abs(oy - p.y) + 0.06);
+    if (g === BLOCKED) {
+      // wedged into something (fast sink against a cliff): stand on the terrain under us
+      const th = terrainHeight(env.world, p.x, p.z);
+      g = th >= p.y - 1 ? th : -Infinity;
+    }
+    if (g !== BLOCKED && g !== -Infinity && p.y <= g + 0.02) {
+      p.y = g;
+      const nrm = normal(env, p.x, g + 0.04, p.z);
+      p.gnx = nrm.x; p.gny = nrm.y; p.gnz = nrm.z;
+      p.grounded = true;
+      p.vy = 0;
+      p.dived = false;
+      p.coyote = 0;
+      fx |= Fx.SkyLand;
+      if (nrm.y < C.WALK_NY) setMove(p, Move.SteepSlide);
+      else {
+        p.vx *= 0.3; p.vz *= 0.3;
+        setMove(p, Move.Splat);
+      }
+    }
+  }
+  const W = waterAt(env, p.x, p.z);
+  p.waterY = W;
+  if (W !== NO_WATER_Y && W - p.y > (p.grounded ? C.SWIM_ENTER : C.SWIM_DEPTH * 0.85)) {
+    // belly-flop into a swim (never a plunge: you'd come up gasping)
+    p.grounded = false;
+    p.vx *= 0.3; p.vz *= 0.3; p.vy = 0;
+    p.y = Math.max(p.y, W - C.SWIM_DEPTH);
+    setMove(p, Move.Swim);
+    fx |= Fx.SkyLand | Fx.WaterEnter | Fx.BellyFlop;
+  }
+  return fx;
+}
+
+function stepSplat(p: PlayerState, env: SimEnv, dt: number): number {
+  // pancaked: skid to a stop, can't act until we pop back up
+  const s = hspeed(p);
+  if (s > 1e-4) { const ns = Math.max(0, s - 16 * dt); p.vx *= ns / s; p.vz *= ns / s; }
+  p.vy = 0;
+  const ox = p.x, oy = p.y, oz = p.z;
+  p.x += p.vx * dt; p.z += p.vz * dt;
+  resolveBody(p, env, true, C.BODY_H_LOW);
+  if (!followGround(p, env, ox, oz, oy)) {
+    p.grounded = false;
+    p.coyote = 0;
+    setMove(p, Move.Air);
+    return 0;
+  }
+  p.grounded = true;
+  if (p.moveT >= C.SPLAT_TIME) {
+    p.coyote = C.COYOTE_TIME;
+    setMove(p, Move.Ground);
+  }
+  return 0;
+}
+
 /** Accelerate horizontal velocity toward (tx, tz) by at most `a`. */
 function approach(p: PlayerState, tx: number, tz: number, a: number): void {
   let dx = tx - p.vx, dz = tz - p.vz;
@@ -639,11 +729,20 @@ export function stepPlayer(p: PlayerState, cmd: InputCmd, dt: number, env: SimEn
     case Move.Underwater:
       fx = stepUnderwater(p, cmd, env, dt);
       break;
+    case Move.Glide:
+      fx = stepGlide(p, cmd, env, dt);
+      p.breath = 1;
+      break;
+    case Move.Splat:
+      fx = stepSplat(p, env, dt);
+      break;
     default:
       fx = stepLand(p, cmd, env, dt, pressed);
       if ((p.move as MoveState) !== Move.Swim && (p.move as MoveState) !== Move.Underwater) p.breath = Math.min(1, p.breath + C.BREATH_REFILL * dt);
       break;
   }
+  // spawn shield for the whole drop (the sim counts it down from DROP_LAND_SHIELD after touch-down)
+  if ((p.move === Move.Glide || p.move === Move.Splat) && p.shield < C.DROP_LAND_SHIELD + dt) p.shield = C.DROP_LAND_SHIELD + dt;
   // the edge of the map: an invisible current pushes you back
   const lim = WORLD_HALF - 12;
   if (p.x > lim) { p.x = lim; if (p.vx > 0) p.vx = 0; }

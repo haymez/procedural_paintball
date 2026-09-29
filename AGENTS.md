@@ -11,13 +11,22 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   sea-monster crest/fin as a *Luca* nod. When submerged they shimmer into a
   scaly teal "sea monster" skin (cosmetic only).
 - **Paint is health**: each hit coats you in the shooter's color; 3 coats =
-  eliminated (splat into a puddle, respawn after ~3 s, choose 1 of 2 random
-  spawn points, brief spawn shield). **Paint wears off** on its own: ~5 s
+  eliminated (splat into a puddle, then after ~3 s a **sky drop**, below).
+  **Paint wears off** on its own: ~5 s
   after the last hit, one coat flakes off every ~4 s. **Water washes it off
   faster** (~1.5 s submerged per coat) — but swimming is slow, you can't
   shoot, and breath is limited: ~8 s submerged, then you're forced to the
   surface gasping and can't dive again for a few seconds. Submerged players
   shimmer into a dark teal-navy "sea monster" skin (cosmetic only).
+- **Sky drop** (every spawn, match start included): you appear ~170–215 m
+  over the middle of the island and glide down like a flying squirrel (limbs
+  spread, skin flaps; `Move.Glide`): the view steers, W dives, S flares (slow
+  and flat: reaches any corner), Shift tucks into a plummet, A/D slip. No
+  parachute: you splat onto the ground (`Move.Splat`, ~0.4 s pancake, no
+  damage) and pop back up; water = belly-flop into a swim. No shooting and
+  shielded for the whole drop + 1.5 s. While dropping, the HUD shows every
+  enemy live, hot zones (hits/eliminations in the last 20 s) glow as light
+  columns, and your landing spot is marked. Bots drop toward the action too.
 - **Paint persists** on the world for the whole match.
 - **Movement**: bouncy, arcade, squash-and-stretch. Sprint (unlimited), jump,
   slide, belly-flop dive, ledge mantle, cliff-jump into water, swim.
@@ -25,14 +34,17 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   range ~40 m, limited hopper + reserve. Ammo caches and upgrades around the
   island (BigHopper, RapidFire, LongBarrel, Scope, Vest, QuickFeet, Snorkel).
   Upgrades are lost on elimination and drop as a pickup.
-- **Transport (v1)**: rowboats and gondolas on bays, Vespas on dirt paths,
-  ziplines from high points. (Later: rope swings, stream currents, sidecars.)
+- **Transport**: fast boats — jetskis (1 rider, hop off swells) on beaches
+  and Riva-style speedboats (driver + 2 passengers who can shoot) at docks and
+  cove jetties — Vespas on dirt paths, 2 pastel gyrocopters on open flat
+  ground (arcade flight, pilot can't shoot, bail out any time), ziplines from
+  high points. (Later: rope swings, stream currents, sidecars.)
 - **Match**: 10-minute timed FFA, most eliminations wins. Host picks seed,
   bot count. Rooms via lobby list or 4-char code.
 - **Island character** from the seed (shared/world/gen/character.ts), on top
   of the archetype: climate (lush rainforest / tropical / Mediterranean /
   dry), coast style (beaches / cliffs / calanque coves with jetties and moored
-  gondolas / mixed) and relief (low and rolling … tall). Forests grow in
+  speedboats / mixed) and relief (low and rolling … tall). Forests grow in
   contiguous stands (rainforest `Jungle`, holm-oak/pine `Forest`).
 - **Time of day** from the seed, always sunny (8:00–17:30).
 - **Audio**: CC0 SFX, biome-aware ambience, menu-only music.

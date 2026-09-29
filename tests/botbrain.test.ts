@@ -4,7 +4,7 @@ import { generateWorld } from "../shared/world/generate";
 import { terrainHeight } from "../shared/world/collide";
 import { segmentClear } from "../shared/bots/tactics";
 import { NF } from "../shared/bots/constants";
-import { Btn, MatchSim, TICK_DT, createEnv, type InputCmd, type SimEnv } from "../shared/sim/index";
+import { Btn, MatchSim, Move, TICK_DT, createEnv, type InputCmd, type SimEnv } from "../shared/sim/index";
 import type { World } from "../shared/world/types";
 import { BotBrain, createBotBrain, getHub, makeConfig, prepareBotWorld, St, type BotController } from "../shared/bots/brain/index";
 import { createBot, DummyBot, setBotFactory } from "../worker/room/bots";
@@ -149,6 +149,8 @@ describe("bot brain", () => {
     const { sim, bots } = match(3, 1, () => 1);
     const b = bots[0];
     const p = sim.player(b.id)!;
+    const s0 = sim.world.spawns[0];
+    sim.teleport(b.id, s0.x, NaN, s0.z); // skip the sky drop
     run(sim, bots, [b.id], 60 * 3); // spawn, pick a goal, start walking
     // glue the bot to the spot (as if wedged in geometry) for 12 s
     const gx = p.x, gy = p.y, gz = p.z;
@@ -204,41 +206,45 @@ describe("bot brain", () => {
     expect(b.stats.dives).toBeGreaterThan(0);
   });
 
-  it("picks the spawn farther from enemies", () => {
-    const { sim, bots } = match(4, 6, () => 2);
-    run(sim, bots, bots.map((b) => b.id), 60 * 2);
-    const b = bots[0];
-    const p = sim.player(b.id)!;
-    let picks = 0, good = 0;
-    for (let trial = 0; trial < 6; trial++) {
-      p.shield = 0;
-      for (let k = 0; k < 3; k++) sim.paint(b.id, 129);
-      expect(p.alive).toBe(false);
-      let choices: number[] = [];
-      let chose = -1;
-      for (let k = 0; k < 60 * 6 && !p.alive; k++) {
-        if (p.spawnChoices.length === 2) choices = p.spawnChoices.slice();
-        const c = b.think(sim, b.id, TICK_DT);
-        if (c.buttons & Btn.SpawnA) chose = 0;
-        if (c.buttons & Btn.SpawnB) chose = 1;
-        sim.applyInput(b.id, { ...c });
-        for (const o of bots.slice(1)) sim.applyInput(o.id, { ...o.think(sim, o.id, TICK_DT) });
+  it("sky-drops in near the action, spread out, then gets on with it", () => {
+    const { world, env } = ctx(4);
+    let near = 0, total = 0, spread = 0;
+    for (let trial = 0; trial < 3; trial++) {
+      const sim = new MatchSim(world, { env, seed: 20 + trial });
+      // a fight on the ground somewhere within gliding range: two players trading paint
+      const ok = world.spawns.filter((s) => Math.hypot(s.x - sim.drop.cx, s.z - sim.drop.cz) < 330);
+      const s = ok[(trial * 7 + 3) % ok.length];
+      sim.addPlayer(1, { name: "p1", color: 2, isBot: false });
+      sim.addPlayer(2, { name: "p2", color: 3, isBot: false });
+      sim.teleport(1, s.x, NaN, s.z);
+      sim.teleport(2, s.x + 5, NaN, s.z);
+      for (const id of [1, 2]) sim.player(id)!.shield = 0;
+      sim.paint(1, 2);
+      sim.paint(2, 1);
+      const bots: BotBrain[] = [];
+      for (let i = 0; i < 4; i++) {
+        bots.push(new BotBrain({ id: 128 + i, seed: 20 + trial, difficulty: 2, personality: i % 2 ? "aggressive" : "explorer" }));
+        const p = sim.addPlayer(128 + i, { name: "b" + i, color: 10 + i, isBot: true });
+        expect(p.move).toBe(Move.Glide);
+      }
+      const dropping = () => bots.some((b) => { const m = sim.player(b.id)!.move; return m === Move.Glide || m === Move.Splat; });
+      for (let k = 0; k < 60 * 45 && dropping(); k++) {
+        for (const b of bots) sim.applyInput(b.id, { ...b.think(sim, b.id, TICK_DT) });
         sim.step(TICK_DT);
         sim.events.length = 0;
       }
-      expect(p.alive).toBe(true);
-      if (chose < 0 || choices.length < 2) continue;
-      picks++;
-      const far = (i: number) => {
-        const s = sim.world.spawns[choices[i]];
-        let d = 1e9;
-        for (const o of sim.players) if (o.id !== b.id && o.alive) d = Math.min(d, Math.hypot(o.x - s.x, o.z - s.z));
-        return d;
-      };
-      if (far(chose) >= far(1 - chose) - 15) good++;
+      expect(dropping()).toBe(false);
+      const land = bots.map((b) => sim.player(b.id)!).map((p) => [p.x, p.z] as const);
+      for (const [x, z] of land) { total++; if (Math.hypot(x - s.x - 2.5, z - s.z) < 60) near++; }
+      let far = 0;
+      for (const a of land) for (const b of land) far = Math.max(far, Math.hypot(a[0] - b[0], a[1] - b[1]));
+      if (far > 10) spread++;
+      // and afterwards they play normally
+      run(sim, bots, bots.map((b) => b.id), 60 * 4);
+      for (const b of bots) expect(b.stats.distance).toBeGreaterThan(40);
     }
-    expect(picks).toBeGreaterThan(3);
-    expect(good).toBeGreaterThanOrEqual(picks - 2);
+    expect(near).toBeGreaterThanOrEqual(total - 2);
+    expect(spread).toBe(3);
   });
 
   it("plugs into the server's BotController seam", () => {

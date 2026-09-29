@@ -22,11 +22,10 @@ function player(): ReturnType<typeof createPlayerState> {
     x: 123.456, y: 17.25, z: -301.9, vx: 5.43, vy: -3.2, vz: 0.07, yaw: 2.2, pitch: -0.4, move: Move.Air, moveT: 0.37,
     grounded: false, sprinting: true, aiming: false, alive: true, jumpHeld: true, stamina: 0.61, staminaDelay: 0.3,
     gnx: 0.1, gny: 0.98, gnz: -0.05, hopper: 13, reserve: 45, shotSeq: 88, fireCd: 0.05, reload: 0, shield: 0.4, breath: 0.8,
-    upgrades: 0b1010, score: 4, deaths: 2, style: 9, streak: 1, vehicle: -1, seat: -1, zip: -1, zipT: 0, zipV: 0, spawnPick: -1,
+    upgrades: 0b1010, score: 4, deaths: 2, style: 9, streak: 1, vehicle: -1, seat: -1, zip: -1, zipT: 0, zipV: 0,
     mx0: 1, my0: 2, mz0: 3, mx1: 4, my1: 5, mz1: 6, mDur: 0.3, waterY: -1e9, wash: 0.2, deadT: 0,
   });
   p.coatBy.push(3, 130);
-  p.spawnChoices.push(12, 37);
   return p;
 }
 
@@ -87,7 +86,6 @@ describe("entity schemas", () => {
       if (f.kind === "f32") expect((q as unknown as Record<string, number>)[f.name]).toBe(Math.fround((p as unknown as Record<string, number>)[f.name]!));
     }
     expect([q.hopper, q.reserve, q.shotSeq, q.prevButtons, q.move]).toEqual([p.hopper, p.reserve, p.shotSeq, p.prevButtons, p.move]);
-    expect(q.spawnChoices).toEqual([12, 37]);
     expect(q.coatBy).toEqual([3, 130]);
     expect(q.jumpHeld && !q.exhausted && q.alive).toBe(true);
   });
@@ -115,7 +113,7 @@ describe("entity schemas", () => {
 
   it("vehicle schema and packers", () => {
     const v: VehicleState = {
-      id: 2, kind: VehicleKind.Gondola, x: 10.5, y: 0.1, z: -40, yaw: 1.2, speed: 3.3, vy: 0, steer: -0.4, throttle: 1, pitch: 0,
+      id: 2, kind: VehicleKind.Speedboat, x: 10.5, y: 0.1, z: -40, yaw: 1.2, speed: 3.3, vy: 0, steer: -0.4, throttle: 1, pitch: 0,
       airborne: false, seats: [5, -1, 131], idle: 0, sx: 0, sy: 0, sz: 0, syaw: 0,
     };
     const q = applyWire(VEHICLE, quantizeInto(VEHICLE, v, newWire(VEHICLE)), { ...v, seats: [0, 0, 0], x: 0 });
@@ -156,7 +154,6 @@ const sampleEvents: SimEvent[] = [
   { type: "elim", victim: 4, killer: 3, x: 1, y: 2, z: 3, tags: 5, place: "", dist: 22.5 },
   { type: "elim", victim: 4, killer: -1, x: 1, y: 2, z: 3, tags: 0, place: "", dist: 0 },
   { type: "respawn", pid: 4, x: -100, y: 20, z: 50 },
-  { type: "spawnChoices", pid: 4 },
   { type: "pickup", pid: 3, pickup: 70, kind: 2, drop: 6, x: 5, y: 6, z: 7 },
   { type: "pickupSpawn", pickup: 12 },
   { type: "vehicleEnter", pid: 3, vehicle: 2, seat: 1 },
@@ -215,8 +212,8 @@ describe("snapshot", () => {
     expect(hit.dx).toBeCloseTo(0.6, 1);
     expect(hit.coats).toBe(2);
     expect((got.events[8] as Extract<NetEvent, { type: "elim" }>).killer).toBe(-1);
-    expect((got.events[19] as Extract<NetEvent, { type: "wash" }>).color).toBe(0xff6b6b);
-    expect((got.events[20] as Extract<NetEvent, { type: "wear" }>).color).toBe(0x6bff6b);
+    expect((got.events[18] as Extract<NetEvent, { type: "wash" }>).color).toBe(0xff6b6b);
+    expect((got.events[19] as Extract<NetEvent, { type: "wear" }>).color).toBe(0x6bff6b);
     expect(EV_TYPES.length).toBeLessThan(256);
   });
 

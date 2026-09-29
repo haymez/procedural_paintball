@@ -19,7 +19,7 @@ export interface MatchSnapshot {
    * For the LOCAL player (prediction / HUD) additionally everything stepPlayer
    * reads: coyote jumpBuf jumpHeld prevButtons stamina staminaDelay exhausted
    * slideCd stumble dived gasp wash gnx gny gnz, plus hopper reserve reload
-   * fireCd shotSeq deadT spawnChoices spawnPick lastSeq (ack for reconciliation).
+   * fireCd shotSeq deadT lastSeq (ack for reconciliation).
    */
   players: PlayerState[];
   /** Balls in flight (clients extrapolate with BALL_GRAVITY between snapshots). */

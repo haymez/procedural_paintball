@@ -2,10 +2,11 @@
 import "./hud.css";
 import { PickupKind, VehicleKind, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
 import {
-  Move, MAX_COATS, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, RELOAD_TIME, hopperCap, hasUpgrade, upgradeName, type PlayerState, type SimSnapshot,
+  Move, MAX_COATS, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, RELOAD_TIME, RESPAWN_DELAY, hopperCap, hasUpgrade, upgradeName,
+  type HotZone, type PlayerState, type SimSnapshot,
 } from "../../../../shared/sim/index";
 import {
-  BOAT_ICON, damageArcSvg, emptySlotSvg, hex, hitMarkerSvg, PLAYER_ARROW, splatSvg, UPGRADE_BLURB, UPGRADE_COLORS, UPGRADE_ICONS, VESPA_ICON,
+  BOAT_ICON, GYRO_ICON, JETSKI_ICON, damageArcSvg, emptySlotSvg, hex, hitMarkerSvg, PLAYER_ARROW, splatSvg, UPGRADE_BLURB, UPGRADE_COLORS, UPGRADE_ICONS, VESPA_ICON,
 } from "./art";
 import { blobSvg } from "../../ui/art";
 import { renderMapImage } from "./mapImage";
@@ -27,10 +28,22 @@ export interface HudFrame {
   scoped: boolean;
   /** Crosshair is over another player. */
   onTarget: boolean;
+  /** Sky drop in progress (the local player is gliding / splatting down): what to show. */
+  drop?: DropHud | null;
+  /** Hot zones (recent fights), hottest first: drawn on the maps. */
+  zones?: readonly HotZone[];
+}
+
+export interface DropHud {
+  /** Height above the ground under you (m). */
+  alt: number;
+  /** Predicted touch-down point, or null. */
+  landing: { x: number; z: number } | null;
+  /** Enemies to mark on screen (projected: ndc x/y, z > 1 = behind). */
+  marks: { id: number; name: string; color: number; ndc: { x: number; y: number; z: number }; dist: number }[];
 }
 
 export interface HudCallbacks {
-  onSpawnPick(i: number): void;
   onResume(): void;
   onLeave(): void;
   onSettings(s: Settings): void;
@@ -132,8 +145,13 @@ export class Hud {
   private deathEl: El | null = null;
   private pauseEl: El | null = null;
   private resultsEl: El | null = null;
-  private spawnPicked = -1;
   private myColor = 0xffffff;
+  // sky drop
+  private dropEl: El;
+  private dropAlt: El;
+  private dropOn = false;
+  private foeMarks: El[] = [];
+  private liveT = 0;
   private lastFrame: HudFrame | null = null;
   private lastAlive = true;
   private lastHeading = 99;
@@ -227,6 +245,14 @@ export class Hud {
     this.clickEl = el("div", "ih-click card hidden", "Click to play");
     this.fpsEl = el("div", "ih-fps");
     this.root.append(this.promptEl, this.toastsEl, this.clickEl, this.fpsEl);
+
+    // sky drop card
+    this.dropEl = el("div", "ih-dropcard card hidden",
+      `<div class="t">Sky drop!</div><div class="alt num">180 m</div>` +
+      `<div class="keys"><kbd>Mouse</kbd><span>steer</span><kbd>W</kbd><span>dive</span><kbd>S</kbd><span>flare · float</span><kbd>Shift</kbd><span>plummet</span></div>` +
+      `<div class="hint">Glowing beams = fights happening now</div>`);
+    this.dropAlt = this.dropEl.querySelector(".alt") as El;
+    this.root.appendChild(this.dropEl);
   }
 
   setColor(c: number): void {
@@ -389,7 +415,9 @@ export class Hud {
     ctx.fillStyle = "#4fb0c0";
     ctx.fillRect(0, 0, S, S);
     if (!me) { ctx.restore(); return; }
-    const R = 95; // meters shown from centre to edge
+    // meters shown from centre to edge: zoomed way out while dropping in, closing in as you come down
+    const drop = f.drop;
+    const R = drop ? Math.max(110, Math.min(380, 90 + drop.alt * 1.7)) : 95;
     const k = S / 2 / R; // px per meter
     const imgK = this.mapImg.width / WORLD_SIZE;
     const rot = -Math.PI / 2 - Math.atan2(Math.cos(f.camYaw), Math.sin(f.camYaw));
@@ -412,6 +440,40 @@ export class Hud {
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
       ctx.setLineDash([]);
     }
+    // hot zones: where the fights are (always, brighter while dropping in)
+    if (f.zones && f.zones.length) {
+      for (const z of f.zones) {
+        let [x, y] = toMini(z.x, z.z);
+        const inside = x > 10 && y > 10 && x < S - 10 && y < S - 10;
+        if (!inside) {
+          if (!drop) continue;
+          const dx = x - S / 2, dy = y - S / 2, m = Math.max(Math.abs(dx), Math.abs(dy)) || 1;
+          x = S / 2 + (dx / m) * (S / 2 - 12); y = S / 2 + (dy / m) * (S / 2 - 12);
+        }
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 260 + z.x);
+        const r = Math.max(9, 40 * k * (inside ? 1 : 0.4)) * (0.9 + 0.2 * pulse);
+        ctx.globalAlpha = (drop ? 0.9 : 0.55) * Math.min(1, 0.4 + z.heat / 5);
+        ctx.fillStyle = hex(z.color || 0xf47b63);
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+        ctx.globalAlpha = drop ? 1 : 0.7;
+        ctx.strokeStyle = "#fffaf0"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+        ctx.strokeStyle = "#23374b"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, r + 2, 0, TAU); ctx.stroke();
+        if (drop) { ctx.globalAlpha = 1; ctx.font = "900 15px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fffaf0"; ctx.fillText("!", x, y + 1); }
+      }
+      ctx.globalAlpha = 1;
+    }
+    // where I'll touch down
+    if (drop && drop.landing) {
+      const [x, y] = toMini(drop.landing.x, drop.landing.z);
+      ctx.strokeStyle = "#23374b"; ctx.lineWidth = 2; ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(S / 2, S / 2); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = "#fffaf0"; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = hex(this.myColor); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.stroke();
+    }
     // only people on the minimap: pickups and vehicles live on the big map (M)
     // radar sweep: a ring expanding from you, then fading "last seen" blips
     if (this.radarAge < 0.8) {
@@ -430,7 +492,7 @@ export class Hud {
         let [x, y] = toMini(b.x, b.z);
         const inside = x > 8 && y > 8 && x < S - 8 && y < S - 8;
         if (!inside) {
-          if (outside >= RADAR_NEAREST) continue;
+          if (outside >= (drop ? 12 : RADAR_NEAREST)) continue;
           outside++;
           // pin to the rim along the bearing
           const dx = x - S / 2, dy = y - S / 2, m = Math.max(Math.abs(dx), Math.abs(dy)) || 1;
@@ -475,7 +537,11 @@ export class Hud {
     this.timer.classList.toggle("final", tl <= 10 && tl > 0);
 
     this.radarAge += dt;
-    if (this.radarAge >= RADAR_PERIOD) this.sweepRadar(f);
+    // while dropping in, the radar is live (no sweep ring): every enemy on the island, where they are now
+    this.liveT -= dt;
+    if (f.drop) { if (this.liveT <= 0) { this.liveT = 0.1; this.sweepRadar(f); this.radarAge = 0.8; } }
+    else if (this.radarAge >= RADAR_PERIOD) this.sweepRadar(f);
+    this.updateDrop(f);
     this.updateCompass(f.camYaw, me);
     this.updateCompassPings(f);
     this.miniT -= dt;
@@ -567,8 +633,58 @@ export class Hud {
     if (this.mapOpen && this.mapPins) { this.mapT -= dt; if (this.mapT <= 0) { this.mapT = 0.2; this.fillMapPins(); } }
     if (this.deathEl && me) {
       const s = this.deathEl.querySelector(".cd");
-      if (s) s.textContent = me.spawnChoices.length ? (me.spawnPick >= 0 ? "Washing ashore…" : `Pick a spawn — 1 / 2 (auto in ${Math.max(0, Math.ceil(5.5 - me.deadT))})`) : "";
+      const left = Math.max(0, Math.ceil(RESPAWN_DELAY - me.deadT));
+      const txt = me.alive ? "" : left > 0 ? `· dropping back in ${left}…` : "· here we go!";
+      if (s && s.textContent !== txt) s.textContent = txt;
+      // the drop map covers the death card: count down in its title too
+      const m = this.mapPanel?.querySelector(".dropcd");
+      const mt = me.alive ? "" : left > 0 ? `Sky drop in ${left}… pick a fight` : "Here we go!";
+      if (m && m.textContent !== mt) m.textContent = mt;
     }
+  }
+
+  // ------------------------------------------------------------------ sky drop
+  private updateDrop(f: HudFrame): void {
+    const d = f.drop;
+    const on = !!d;
+    if (on !== this.dropOn) {
+      this.dropOn = on;
+      this.root.classList.toggle("drop", on);
+      this.dropEl.classList.toggle("hidden", !on);
+      this.liveT = 0;
+    }
+    let n = 0;
+    if (d) {
+      const a = `${Math.max(0, Math.round(d.alt))} m`;
+      if (this.dropAlt.textContent !== a) this.dropAlt.textContent = a;
+      // enemy markers (names over their heads, arrows at the screen edge; only the nearest few edge ones get a name)
+      let edgeNames = 0;
+      for (const m of d.marks) {
+        let e = this.foeMarks[n];
+        if (!e) { e = el("div", "ih-foe", `<i class="arrow"></i><b></b>`); this.root.appendChild(e); this.foeMarks.push(e); }
+        n++;
+        const b = e.querySelector("b")!;
+        const label = `${m.name} · ${Math.round(m.dist)} m`;
+        if (b.textContent !== label) b.textContent = label;
+        e.style.setProperty("--c", hex(m.color));
+        e.style.display = "";
+        const behind = m.ndc.z > 1;
+        let x = behind ? -m.ndc.x : m.ndc.x, y = behind ? -m.ndc.y : m.ndc.y;
+        // (the top strip belongs to the timer and compass)
+        const off = behind || Math.abs(x) > 0.94 || y > 0.7 || y < -0.9;
+        if (off) {
+          const k = Math.max(Math.abs(x) / 0.92, y > 0 ? y / 0.68 : -y / 0.84, 1e-3);
+          x /= k; y /= k;
+          if (behind && Math.abs(x) < 0.3 && Math.abs(y) < 0.3) y = -0.84;
+        }
+        e.classList.toggle("edge", off);
+        e.classList.toggle("quiet", off && edgeNames++ >= 3);
+        e.style.setProperty("--a", `${((Math.atan2(-y, x) * 180) / Math.PI - 90).toFixed(1)}deg`);
+        e.style.opacity = off ? "0.75" : String(Math.max(0.55, Math.min(1, 1.2 - m.dist / 400)));
+        e.style.transform = `translate(${((x * 0.5 + 0.5) * 100).toFixed(2)}vw, ${((-y * 0.5 + 0.5) * 100).toFixed(2)}vh)`;
+      }
+    }
+    for (let i = n; i < this.foeMarks.length; i++) this.foeMarks[i].style.display = "none";
   }
   private mapT = 0;
 
@@ -776,14 +892,14 @@ export class Hud {
     if (open) {
       this.mapPanel = el("div", "ih-panel ih-map");
       const card = el("div", "card");
-      const head = el("div", "head", `<h2>${escapeHtml(this.world.name)}</h2><span class="legend"><b class="lg-foe"></b> enemies (last seen) · <b class="lg-tile"></b> pickups &amp; boats · M to close</span>`);
+      const head = el("div", "head", `<h2>${escapeHtml(this.world.name)}</h2><span class="legend"><b class="lg-hot"></b> fights · <b class="lg-foe"></b> enemies · <b class="lg-tile"></b> pickups &amp; rides · M</span>`);
       const wrapEl = el("div", "wrap");
       const c = document.createElement("canvas");
       c.width = 1024; c.height = 1024;
       c.getContext("2d")!.drawImage(this.mapImg, 0, 0);
       this.mapPins = el("div", "");
       this.mapPins.style.cssText = "position:absolute;inset:0";
-      wrapEl.append(c, this.mapPins);
+      wrapEl.append(c, this.mapPins, el("div", "dropcd"));
       card.append(head, wrapEl);
       this.mapPanel.appendChild(card);
       this.mapPanel.addEventListener("click", (e) => { if (e.target === this.mapPanel && !this.deathEl) this.toggleMap(false); });
@@ -821,8 +937,13 @@ export class Hud {
       e.title = upgradeName(p.kind);
     }
     for (const v of f.snap.vehicles) {
-      const e = pin(v.x, v.z, "tile", v.kind === VehicleKind.Vespa ? VESPA_ICON : BOAT_ICON);
-      e.title = v.kind === VehicleKind.Vespa ? "Vespa" : v.kind === VehicleKind.Gondola ? "Gondola" : "Rowboat";
+      const e = pin(v.x, v.z, "tile", v.kind === VehicleKind.Vespa ? VESPA_ICON : v.kind === VehicleKind.Jetski ? JETSKI_ICON : v.kind === VehicleKind.Gyrocopter ? GYRO_ICON : BOAT_ICON);
+      e.title = v.kind === VehicleKind.Vespa ? "Vespa" : v.kind === VehicleKind.Jetski ? "Jetski" : v.kind === VehicleKind.Gyrocopter ? "Gyrocopter" : "Speedboat";
+    }
+    for (const z of f.zones ?? []) {
+      const e = pin(z.x, z.z, "hot", "<i></i>");
+      e.style.setProperty("--c", hex(z.color || 0xf47b63));
+      e.style.setProperty("--s", Math.min(1.6, 0.8 + z.heat / 8).toFixed(2));
     }
     const ra = this.radarAlpha();
     if (ra > 0)
@@ -836,25 +957,17 @@ export class Hud {
         const e = pin(me.x, me.z, "me", PLAYER_ARROW);
         e.style.transform = `translate(-50%,-50%) rotate(${(bearingOfYaw(f.camYaw) * 180) / Math.PI}deg)`;
       }
-      if (!me.alive && me.spawnChoices.length) {
-        me.spawnChoices.forEach((si, i) => {
-          const s = f.snap.spawns[si];
-          if (!s) return;
-          const e = pin(s.x, s.z, "spawn" + (me.spawnPick === i || this.spawnPicked === i ? " picked" : ""), `<span>${i + 1}</span>`);
-          e.addEventListener("click", (ev) => { ev.stopPropagation(); this.spawnPicked = i; this.cb.onSpawnPick(i); this.fillMapPins(); });
-        });
-      }
     }
   }
 
   // ------------------------------------------------------------------ death
   showDeath(title: string, by: string | null, color: number): void {
     this.hideDeath();
-    this.spawnPicked = -1;
     this.deathEl = el("div", "ih-death", `<div class="t">${escapeHtml(title)}</div><div class="s card">${by ? `by <b style="background:${hex(color)};padding:0 .4em;border-radius:.5em;border:2px solid #23374b">${escapeHtml(by)}</b>` : "Oops"} <span class="cd dim"></span></div>`);
     this.root.appendChild(this.deathEl);
   }
-  openSpawnMap(): void {
+  /** While waiting to drop back in: the big map, to scout the fights (hot zones, enemies). */
+  openDropMap(): void {
     if (this.deathEl) this.toggleMap(true);
   }
   hideDeath(): void {

@@ -1,9 +1,12 @@
-// Vehicles: rowboat, gondola, Vespa. Each is a small Group with 1–4 draw calls,
-// seat anchors (put a blob on them with `state.seat`), hand grip anchors, and
-// simple procedural animation (boat bob + oar strokes, wheel spin + lean).
+// Vehicles: jetski, speedboat (a Riva-style runabout), Vespa, gyrocopter. Each
+// is a small Group with a handful of draw calls, seat anchors (put a blob on
+// them with `state.seat`), hand grip anchors, and simple procedural animation
+// (planing attitude, bank into carves, bow spray / rooster tail / wake; wheel
+// spin + lean; rotor + prop spin and banking).
 //
-// Local frame: +Z = forward (bow / headlight), +Y up, origin on the water line
-// (boats) or the ground (Vespa). pos = that origin in world space.
+// Local frame: +Z = forward (bow / headlight / nose), +Y up, origin on the
+// water line (boats) or the ground under the wheels (Vespa, gyrocopter).
+// pos = that origin in world space.
 import * as THREE from "three";
 import { ParametricGeometry } from "three/addons/geometries/ParametricGeometry.js";
 import { MeshBuilder, mat, clamp, damp, lerp } from "./builder";
@@ -19,13 +22,15 @@ export interface VehicleState {
   speed?: number;
   /** -1..1, + = turning left. */
   steer?: number;
-  /** Boats: is someone pulling the oars? (defaults to |speed| > 0.3) */
-  rowing?: boolean;
-  /** Vespa: throttle 0..1 for exhaust puffs. */
+  /** Throttle -1..1 (exhaust puffs, prop speed). */
   throttle?: number;
   occupied?: boolean;
-  /** Water surface height for boats (defaults to pos.y). */
+  /** Water surface height for boats (defaults to pos.y); ignored while airborne. */
   waterY?: number;
+  /** Nose-up attitude (rad) from the sim: planing boats, climbing gyros. */
+  pitch?: number;
+  /** Jetski mid-hop / gyro flying. */
+  airborne?: boolean;
 }
 
 export interface VehicleActor {
@@ -36,14 +41,14 @@ export interface VehicleActor {
   /** Blob mode + standing flag to use for the driver. */
   readonly driverMode: BlobMode;
   readonly driverStanding: boolean;
-  /** Driver hand targets in world space (oar handles / handlebar grips), refreshed by update(). */
+  /** Driver hand targets in world space (handlebar / wheel / stick grips), refreshed by update(). */
   readonly gripL: THREE.Vector3;
   readonly gripR: THREE.Vector3;
   update(dt: number, state: VehicleState): void;
   dispose(): void;
 }
 
-type Hull = { len: number; beam: number; depth: number; sheerBow: number; sheerStern: number; transom: number; pow: number };
+type Hull = { len: number; beam: number; depth: number; sheerBow: number; sheerStern: number; transom: number; pow: number; rake?: number };
 
 /** Parametric boat hull: u 0..1 stern→bow, v 0..1 port gunwale → keel → starboard gunwale. */
 function hullPoint(h: Hull, u: number, v: number, inset: number, out: THREE.Vector3): THREE.Vector3 {
@@ -56,12 +61,45 @@ function hullPoint(h: Hull, u: number, v: number, inset: number, out: THREE.Vect
   const d = h.depth * (1 - 0.35 * zn * zn) * (1 - inset * 0.6);
   const sheer = 0.12 + (zn > 0 ? h.sheerBow : h.sheerStern) * Math.pow(Math.abs(zn), h.pow);
   const a = (v - 0.5) * Math.PI; // -90° … +90°
-  out.set(Math.sin(a) * w, sheer - d * Math.pow(Math.cos(a), 0.7) - inset * 0.02, z);
+  const down = Math.pow(Math.cos(a), 0.7);
+  // raked stem: the forefoot sweeps back under a flared bow
+  const rake = zn > 0 ? (h.rake ?? 0) * zn * zn * zn * down : 0;
+  out.set(Math.sin(a) * w, sheer - d * down - inset * 0.02, z - rake);
   return out;
 }
 
 function hullGeometry(h: Hull, inset: number, uSeg = 20, vSeg = 10): THREE.BufferGeometry {
   const g = new ParametricGeometry((u, v, target) => hullPoint(h, u, v, inset, target), uSeg, vSeg);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** Crowned deck closing the hull top: u stern→bow, v port→starboard. */
+function deckGeometry(h: Hull, crown: number, u0 = 0.005, u1 = 0.995, uSeg = 24, vSeg = 16): THREE.BufferGeometry {
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  const g = new ParametricGeometry((u, v, target) => {
+    const uu = u0 + (u1 - u0) * u;
+    hullPoint(h, uu, 0, 0, a);
+    hullPoint(h, uu, 1, 0, b);
+    const s = v * 2 - 1;
+    target.set(lerp(a.x, b.x, v), lerp(a.y, b.y, v) + crown * (1 - s * s) * Math.min(1, Math.abs(a.x) * 3), a.z);
+  }, uSeg, vSeg);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** Flat transom closing the hull's open stern (u = 0), fanned from its middle. */
+function transomGeometry(h: Hull, n = 12): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  const top = hullPoint(h, 0, 0, 0, new THREE.Vector3()).y;
+  for (let i = 0; i < n; i++) {
+    hullPoint(h, 0, i / n, 0, a);
+    hullPoint(h, 0, (i + 1) / n, 0, b);
+    pos.push(0, top, a.z, b.x, b.y, b.z, a.x, a.y, a.z);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();
   return g;
 }
@@ -77,43 +115,49 @@ function rimGeometry(h: Hull, r: number): THREE.BufferGeometry {
 }
 
 const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
-// Boats
+// Power boats (jetski + speedboat)
 
-interface BoatParts {
+interface PowerParts {
   hull: Hull;
-  body: THREE.Mesh;
-  oars: { mesh: THREE.Object3D; pivot: THREE.Vector3; side: number; handle: THREE.Vector3; dir?: THREE.Vector3 }[];
+  body: THREE.Object3D[];
+  /** Handlebar / steering wheel assembly (grips are its descendants) and how to turn it. */
+  steer: THREE.Object3D;
+  turn: (steer: number) => void;
+  gl: THREE.Object3D;
+  gr: THREE.Object3D;
   seats: { driver: THREE.Object3D; passenger?: THREE.Object3D; passenger2?: THREE.Object3D };
   wake: THREE.Mesh;
-  standing: boolean;
-  /** Raise the hull so its floor sits above the water plane. */
+  /** Raise the hull so the water line sits right. */
   lift: number;
+  jet: boolean;
 }
 
-class Boat implements VehicleActor {
+class PowerBoat implements VehicleActor {
   readonly object = new THREE.Group();
   readonly seats: VehicleActor["seats"];
-  readonly driverMode: BlobMode = "row";
-  readonly driverStanding: boolean;
+  readonly driverMode: BlobMode = "ride-vespa";
+  readonly driverStanding = false;
   readonly gripL = new THREE.Vector3();
   readonly gripR = new THREE.Vector3();
   private rock = new THREE.Group();
   private t = Math.random() * 10;
-  private stroke = 0;
   private roll = 0;
   private pitch = 0;
+  private steerA = 0;
   private sprayT = 0;
+  private puffT = 0;
+  private wasAir = false;
   private wakeMat: THREE.ShaderMaterial;
 
-  constructor(readonly kind: VehicleKind, private parts: BoatParts, private fx: PaintFx | null) {
+  constructor(readonly kind: VehicleKind, private parts: PowerParts, private fx: PaintFx | null) {
     this.object.add(this.rock);
-    this.rock.add(parts.body);
-    for (const o of parts.oars) this.rock.add(o.mesh);
+    for (const b of parts.body) this.rock.add(b);
+    this.rock.add(parts.steer);
     this.seats = parts.seats;
     for (const s of Object.values(parts.seats)) if (s) this.rock.add(s);
-    this.driverStanding = parts.standing;
     this.object.add(parts.wake);
     this.wakeMat = parts.wake.material as THREE.ShaderMaterial;
   }
@@ -121,82 +165,94 @@ class Boat implements VehicleActor {
   update(dtIn: number, s: VehicleState): void {
     const dt = Math.min(dtIn, 0.05);
     this.t += dt;
+    const t = this.t;
+    const P = this.parts;
     const sp = s.speed ?? 0;
-    const steer = s.steer ?? 0;
-    const wy = s.waterY ?? s.pos.y;
+    const asp = Math.abs(sp);
+    const steer = clamp(s.steer ?? 0, -1, 1);
+    const air = !!s.airborne;
+    const wy = air ? s.pos.y : s.waterY ?? s.pos.y;
     this.object.position.set(s.pos.x, wy, s.pos.z);
     this.object.rotation.set(0, s.yaw, 0);
-    // bob on gentle swell, lean out of turns, bow lifts with speed
-    const t = this.t;
-    this.roll = lerp(this.roll, -steer * Math.abs(sp) * 0.035, damp(3, dt));
-    this.pitch = lerp(this.pitch, -clamp(sp * 0.012, -0.05, 0.08), damp(2, dt));
-    this.rock.position.y = this.parts.lift + Math.sin(t * 1.3) * 0.035 + Math.sin(t * 2.1 + 1) * 0.015 - (s.occupied ? 0.04 : 0);
-    this.rock.rotation.set(this.pitch + Math.sin(t * 1.1) * 0.02, 0, this.roll + Math.sin(t * 0.9 + 2) * 0.03);
+    // bank into carves (jetskis like a motorbike), sim attitude + a little chop slap at speed
+    const bankK = P.jet ? 0.032 : 0.011, bankMax = P.jet ? 0.5 : 0.14;
+    this.roll = lerp(this.roll, clamp(-steer * asp * bankK, -bankMax, bankMax), damp(P.jet ? 5 : 2.5, dt));
+    this.pitch = lerp(this.pitch, s.pitch ?? 0, damp(8, dt));
+    const calm = 1 - clamp(asp / 8, 0, 0.8);
+    const slap = air ? 0 : clamp((asp - 6) / 12, 0, 1) * (P.jet ? 0.018 : 0.01);
+    this.rock.position.y = P.lift + (Math.sin(t * 1.3) * 0.035 + Math.sin(t * 2.1 + 1) * 0.015) * calm + Math.abs(Math.sin(t * 7.3)) * slap - (s.occupied ? 0.03 : 0);
+    this.rock.rotation.set(-this.pitch + Math.sin(t * 1.1) * 0.02 * calm - Math.sin(t * 7.3) * slap, 0, this.roll + Math.sin(t * 0.9 + 2) * 0.03 * calm, "YXZ");
+    // handlebar / wheel
+    this.steerA = lerp(this.steerA, steer, damp(10, dt));
+    P.turn(this.steerA);
+    this.object.updateMatrixWorld(true);
+    P.gl.getWorldPosition(this.gripL);
+    P.gr.getWorldPosition(this.gripR);
 
-    // oar strokes
-    const rowing = s.rowing ?? Math.abs(sp) > 0.3;
-    if (rowing) this.stroke += dt * (this.parts.standing ? 1.9 : 2.6) * Math.PI * (sp < 0 ? -1 : 1);
-    const k = rowing ? 1 : 0;
-    this.rock.updateMatrixWorld(true);
-    for (const o of this.parts.oars) {
-      const ph = this.stroke;
-      if (this.parts.standing) {
-        // gondola: one long oar sweeping in the forcola, blade trailing aft
-        const sweep = Math.sin(ph) * 0.35 * k;
-        const dip = (Math.cos(ph) * 0.06 - 0.02) * k;
-        o.mesh.rotation.set(0, sweep, 0);
-        o.mesh.children[0].rotation.set(dip, 0, 0);
-      } else {
-        // rowboat: blades feather out of the water on the recovery
-        const sweep = (Math.sin(ph) * 0.5) * k - 0.1;
-        const drive = Math.cos(ph) > 0 ? 1 : 0;
-        const lift = k ? lerp(0.22, -0.02, drive * Math.min(1, Math.abs(Math.cos(ph)) * 3)) : 0.35;
-        o.mesh.rotation.set(0, sweep * o.side, 0);
-        o.mesh.children[0].rotation.set(0, 0, lift * o.side);
-      }
-    }
-    this.rock.updateMatrixWorld(true);
-    // grips: oar handles in world space
-    const oars = this.parts.oars;
-    if (this.parts.standing) {
-      const o = oars[0];
-      o.mesh.children[0].localToWorld(this.gripR.copy(o.handle));
-      o.mesh.children[0].localToWorld(this.gripL.copy(o.handle).addScaledVector(o.dir ?? _v.set(0, 0, 1), 0.45));
-    } else {
-      // rower faces the stern, so the starboard (-X) oar is in the LEFT hand
-      for (const o of oars) o.mesh.children[0].localToWorld((o.side < 0 ? this.gripL : this.gripR).copy(o.handle));
-    }
-
-    // wake + spray
-    const wk = clamp(Math.abs(sp) / 4, 0, 1);
+    // wake: longer and whiter with speed
+    const wk = air ? 0 : clamp(asp / 6, 0, 1);
     this.wakeMat.uniforms.uAmt.value = lerp(this.wakeMat.uniforms.uAmt.value, wk, damp(3, dt));
-    this.wakeMat.uniforms.uTime.value = t * (0.6 + wk);
-    this.parts.wake.visible = this.wakeMat.uniforms.uAmt.value > 0.02;
-    if (this.fx && Math.abs(sp) > 1.5) {
-      this.sprayT -= dt;
-      if (this.sprayT <= 0) {
-        this.sprayT = 0.08;
-        const L = this.parts.hull.len;
-        for (const side of [1, -1]) {
-          _v.set(side * 0.25, 0.05, L * 0.42).applyMatrix4(this.object.matrixWorld);
-          const fwdX = Math.sin(s.yaw), fwdZ = Math.cos(s.yaw);
-          const sx = Math.cos(s.yaw) * side, sz = -Math.sin(s.yaw) * side;
-          this.fx.spray(_v, { x: sx * 1.2 + fwdX * sp * 0.4, y: 1 + Math.abs(sp) * 0.15, z: sz * 1.2 + fwdZ * sp * 0.4 }, 2);
-        }
+    this.wakeMat.uniforms.uTime.value = t * (0.6 + wk * 1.5);
+    P.wake.scale.set(1 + wk * 0.4, 1, 0.5 + clamp(asp / 14, 0, 1.2));
+    P.wake.visible = this.wakeMat.uniforms.uAmt.value > 0.02;
+
+    if (!this.fx) { this.wasAir = air; return; }
+    const fwdX = Math.sin(s.yaw), fwdZ = Math.cos(s.yaw);
+    const L = P.hull.len;
+    // splash down after a hop
+    if (this.wasAir && !air) this.fx.splashWater(_v.set(s.pos.x, wy, s.pos.z), P.jet ? 0.7 : 1);
+    this.wasAir = air;
+    // exhaust burble while someone's at the helm
+    if (s.occupied) {
+      this.puffT -= dt;
+      if (this.puffT <= 0) {
+        this.puffT = 0.22 - Math.max(0, s.throttle ?? 0) * 0.12;
+        _v.set(P.jet ? 0 : 0.5, P.lift + (P.jet ? 0.25 : 0.2), -L * 0.5).applyMatrix4(this.rock.matrixWorld);
+        this.fx.dust(_v, 1, 0xeeeaf2);
       }
+    }
+    if (air || asp < 2) return;
+    this.sprayT -= dt;
+    if (this.sprayT > 0) return;
+    this.sprayT = P.jet ? 0.045 : 0.06;
+    // bow spray peeling off both sides
+    for (const side of [1, -1]) {
+      _v.set(side * P.hull.beam * 0.3, 0.05, L * (P.jet ? 0.3 : 0.28)).applyMatrix4(this.object.matrixWorld);
+      _v.y = wy + 0.05;
+      const sx = Math.cos(s.yaw) * side, sz = -Math.sin(s.yaw) * side;
+      const out = 1 + asp * 0.12;
+      this.fx.spray(_v, { x: sx * out + fwdX * sp * 0.25, y: 0.6 + asp * 0.1, z: sz * out + fwdZ * sp * 0.25 }, P.jet ? 1 : 2);
+    }
+    // jetski rooster tail; everyone throws a sheet off the outside of a hard carve
+    if (P.jet && asp > 5) {
+      _v.set(0, 0.1, -L * 0.52).applyMatrix4(this.object.matrixWorld);
+      _v.y = wy + 0.1;
+      this.fx.spray(_v, { x: -fwdX * asp * 0.25, y: 2.2 + asp * 0.14, z: -fwdZ * asp * 0.25 }, 2);
+    }
+    const carve = Math.abs(steer) * asp;
+    if (carve > (P.jet ? 6 : 9)) {
+      const side = steer > 0 ? -1 : 1; // outside of the turn
+      _v.set(side * P.hull.beam * 0.5, 0.05, -L * 0.2).applyMatrix4(this.object.matrixWorld);
+      _v.y = wy + 0.05;
+      const sx = Math.cos(s.yaw) * side, sz = -Math.sin(s.yaw) * side;
+      this.fx.spray(_v, { x: sx * (2 + carve * 0.15), y: 1.5 + carve * 0.08, z: sz * (2 + carve * 0.15) }, P.jet ? 3 : 2);
     }
   }
 
   dispose(): void {
-    this.object.removeFromParent();
-    this.object.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.isMesh) {
-        m.geometry.dispose();
-        (m.material as THREE.Material).dispose();
-      }
-    });
+    disposeTree(this.object);
   }
+}
+
+function disposeTree(root: THREE.Object3D): void {
+  root.removeFromParent();
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) {
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+  });
 }
 
 const WAKE_VERT = /* glsl */ `
@@ -219,16 +275,16 @@ void main() {
 }
 `;
 
-/** V-shaped foam wake trailing from the stern. */
-function makeWake(len: number, spread: number, stern: number): THREE.Mesh {
+/** V-shaped foam wake trailing from the stern (plus a churned strip down the middle). */
+function makeWake(len: number, spread: number, stern: number, centre = 0): THREE.Mesh {
   const b = new THREE.BufferGeometry();
   const pos: number[] = [], uv: number[] = [], idx: number[] = [];
-  const segs = 10;
+  const segs = 12;
   for (const side of [1, -1]) {
     const base = pos.length / 3;
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
-      const z = stern - t * len;
+      const z = -t * len;
       const cx = side * (0.25 + t * spread);
       const w = 0.25 + t * 0.9;
       pos.push(cx - side * w * 0.5, 0.02, z, cx + side * w * 0.5, 0.02, z);
@@ -237,6 +293,21 @@ function makeWake(len: number, spread: number, stern: number): THREE.Mesh {
         const a = base + i * 2;
         if (side > 0) idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
         else idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+  }
+  if (centre > 0) {
+    // prop wash: a straight churned strip
+    const base = pos.length / 3;
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const z = -t * len * 0.7;
+      const w = centre * (1 + t);
+      pos.push(-w, 0.025, z, w, 0.025, z);
+      uv.push(0.2, t, 0.8, t);
+      if (i < segs) {
+        const a = base + i * 2;
+        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
       }
     }
   }
@@ -252,6 +323,7 @@ function makeWake(len: number, spread: number, stern: number): THREE.Mesh {
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(b, m);
+  mesh.position.z = stern;
   mesh.renderOrder = 3;
   mesh.visible = false;
   return mesh;
@@ -273,175 +345,172 @@ function toonMesh(g: THREE.BufferGeometry, shadow = true): THREE.Mesh {
 }
 
 export interface BoatOptions {
-  /** Hull paint color (rowboat). */
+  /** Main paint color (jetski cowl, speedboat boot stripe, gyro body). */
   color?: THREE.ColorRepresentation;
   fx?: PaintFx | null;
 }
 
-export function createRowboat(opts: BoatOptions = {}): VehicleActor {
-  const hull: Hull = { len: 3.6, beam: 1.35, depth: 0.5, sheerBow: 0.2, sheerStern: 0.1, transom: 0.45, pow: 2 };
-  const paint = new THREE.Color(opts.color ?? 0x3fa7b5);
-  const stripe = new THREE.Color(0xfff4dc);
-  const bottom = new THREE.Color(0xc0513a);
+const CREAM = 0xfff4dc;
+const CHROME = 0xd8dde3;
+const INK = 0x3b3440;
+
+export const JETSKI_COLORS = [0x9fd8c8, 0xf6b8c0, 0xffe39a, 0xa9cdf0, 0xd9b8ef];
+
+/** A stubby retro water scooter: pastel cowl, cream saddle, chrome bars, racing roundel. */
+export function createJetski(opts: BoatOptions = {}): VehicleActor {
+  const hull: Hull = { len: 2.9, beam: 0.95, depth: 0.5, sheerBow: 0.2, sheerStern: 0.04, transom: 0.72, pow: 2, rake: 0.7 };
+  const paint = new THREE.Color(opts.color ?? JETSKI_COLORS[0]);
+  const white = new THREE.Color(0xf7f3ea);
+  const stripe = new THREE.Color(0xe0644f);
   const b = new MeshBuilder();
-  const outer = hullGeometry(hull, 0);
-  b.add(outer, {
+  b.add(hullGeometry(hull, 0, 20, 12), {
     colorFn: (p, _n, c) => {
       const top = hullPoint(hull, p.z / hull.len + 0.5, 0, 0, _v).y;
       const dy = top - p.y;
-      c.copy(dy < 0.08 ? stripe : dy < 0.32 ? paint : bottom);
+      c.copy(dy < 0.07 ? paint : dy < 0.12 ? stripe : white);
     },
   });
-  const inner = hullGeometry(hull, 0.07);
-  b.add(inner, { color: PALETTE.wood, flip: true });
-  b.add(rimGeometry(hull, 0.045), { color: PALETTE.woodDark });
-  // thwarts (seats) + floor boards
-  const plank = new THREE.BoxGeometry(1, 1, 1);
-  const thwart = (z: number, y: number) => {
-    const w = hullPoint(hull, z / hull.len + 0.5, 0, 0.06, _v).x * 2;
-    b.add(plank, { color: PALETTE.wood, matrix: mat(0, y, z, 0, 0, 0, Math.abs(w), 0.05, 0.28) });
-  };
-  thwart(-0.15, 0.1);
-  thwart(0.95, 0.12);
-  thwart(-1.25, 0.14);
-  b.add(plank, { color: PALETTE.woodDark, matrix: mat(0, -0.3, 0, 0, 0, 0, 0.6, 0.03, 2.6) });
-  // oarlocks
-  const lock = new THREE.TorusGeometry(0.05, 0.015, 4, 8);
+  b.add(deckGeometry(hull, 0.06), { color: paint });
+  b.add(transomGeometry(hull), { color: white });
+  b.add(rimGeometry(hull, 0.035), { color: white });
+  const sph = new THREE.SphereGeometry(1, 16, 10);
+  // front cowl hump + footwells
+  b.add(sph, { color: paint, matrix: mat(0, 0.2, 0.55, -0.12, 0, 0, 0.4, 0.36, 0.75) });
+  b.add(sph, { color: stripe, matrix: mat(0, 0.2, 0.55, -0.12, 0, 0, 0.405, 0.2, 0.7) });
+  b.add(sph, { color: paint, matrix: mat(0, 0.12, -0.55, 0, 0, 0, 0.44, 0.2, 0.9) });
+  // saddle (two-tone) on a pedestal
+  b.add(new THREE.BoxGeometry(0.36, 0.24, 1.15), { color: paint, matrix: mat(0, 0.2, -0.42) });
+  b.add(new THREE.CapsuleGeometry(0.15, 0.95, 4, 10), { color: 0xfff0d2, matrix: mat(0, 0.38, -0.42, Math.PI / 2, 0, 0, 1.15, 1, 0.8) });
+  b.add(new THREE.TorusGeometry(0.16, 0.014, 4, 16), { color: 0xc98d5c, matrix: mat(0, 0.38, -0.42, 0, Math.PI / 2, 0, 1, 0.8, 3.4) });
+  // racing roundel on both flanks + a jet nozzle at the stern
   for (const side of [1, -1]) {
-    const w = hullPoint(hull, 0.05 / hull.len + 0.5, 0, 0, _v);
-    b.add(lock, { color: 0x6b6f78, matrix: mat(side * Math.abs(w.x), w.y + 0.06, 0.05, 0, Math.PI / 2, 0) });
+    b.add(new THREE.CircleGeometry(0.12, 16), { color: CREAM, matrix: mat(side * 0.5, 0.04, 0.3, 0, side * Math.PI / 2, 0) });
+    b.add(new THREE.CircleGeometry(0.07, 16), { color: stripe, matrix: mat(side * 0.505, 0.04, 0.3, 0, side * Math.PI / 2, 0) });
   }
-  // little bow name plate / eye
-  b.add(new THREE.CircleGeometry(0.07, 10), { color: 0xfff4dc, matrix: mat(0.32, 0.22, 1.42, 0, 0.9, 0) });
-  b.add(new THREE.CircleGeometry(0.07, 10), { color: 0xfff4dc, matrix: mat(-0.32, 0.22, 1.42, 0, -0.9, 0) });
+  b.add(new THREE.CylinderGeometry(0.1, 0.12, 0.2, 10, 1, true), { color: INK, matrix: mat(0, -0.06, -1.45, Math.PI / 2, 0, 0) });
+  // round headlight on the cowl nose
+  b.add(new THREE.CylinderGeometry(0.08, 0.075, 0.06, 12), { color: CHROME, matrix: mat(0, 0.4, 1.13, Math.PI / 2 - 0.5, 0, 0) });
+  b.add(new THREE.SphereGeometry(0.07, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), { color: 0xfffbe0, matrix: mat(0, 0.41, 1.16, Math.PI / 2 - 0.5, 0, 0, 1, 0.45, 1) });
   const body = toonMesh(b.build());
 
-  // oars: pivot at the oarlocks; inner group gets the feather/dip rotation
-  const oars: BoatParts["oars"] = [];
-  const oarGeo = (() => {
-    const ob = new MeshBuilder();
-    ob.add(new THREE.CylinderGeometry(0.028, 0.028, 2.3, 6), { color: PALETTE.wood, matrix: mat(0.55, 0, 0, 0, 0, Math.PI / 2) });
-    ob.add(new THREE.BoxGeometry(0.5, 0.03, 0.16), { color: paint, matrix: mat(1.55, 0, 0) });
-    ob.add(new THREE.CapsuleGeometry(0.035, 0.14, 2, 6), { color: PALETTE.woodDark, matrix: mat(-0.52, 0, 0, 0, 0, Math.PI / 2) });
-    return ob.build();
-  })();
-  const oarMat = makeToonMaterial({ vertexColors: true });
-  for (const side of [1, -1]) {
-    const w = hullPoint(hull, 0.05 / hull.len + 0.5, 0, 0, new THREE.Vector3());
-    const pivot = new THREE.Vector3(side * Math.abs(w.x), w.y + 0.08, 0.05);
-    const outerG = new THREE.Group();
-    outerG.position.copy(pivot);
-    const innerG = new THREE.Group();
-    const m = new THREE.Mesh(oarGeo, oarMat);
-    m.castShadow = true;
-    if (side < 0) m.rotation.y = Math.PI;
-    innerG.add(m);
-    outerG.add(innerG);
-    oars.push({ mesh: outerG, pivot, side, handle: new THREE.Vector3(-0.55 * side, 0, 0) });
-  }
-  const seats = {
-    // rower faces the stern (classic rowing), passengers face the bow
-    driver: anchor("driver", 0, 0.125, -0.15, Math.PI),
-    passenger: anchor("passenger", 0, 0.165, -1.25, 0),
-    passenger2: anchor("passenger2", 0, 0.145, 0.95, Math.PI),
-  };
-  return new Boat(VehicleKind.Rowboat, { hull, body, oars, seats, wake: makeWake(4, 1.4, -1.7), standing: false, lift: 0.3 }, opts.fx ?? null);
+  // handlebar on a steering post, with a little windscreen
+  const hb = new MeshBuilder();
+  hb.add(new THREE.CylinderGeometry(0.035, 0.045, 0.42, 8), { color: paint, matrix: mat(0, 0.16, 0, -0.35, 0, 0) });
+  hb.add(new THREE.CapsuleGeometry(0.022, 0.58, 2, 6), { color: CHROME, matrix: mat(0, 0.36, -0.08, 0, 0, Math.PI / 2) });
+  for (const side of [1, -1]) hb.add(new THREE.CapsuleGeometry(0.03, 0.08, 2, 6), { color: INK, matrix: mat(side * 0.3, 0.36, -0.08, 0, 0, Math.PI / 2) });
+  hb.add(new THREE.CylinderGeometry(0.2, 0.2, 0.16, 12, 1, true, -Math.PI * 0.4, Math.PI * 0.8), { color: 0xcdeef5, matrix: mat(0, 0.44, 0.02, -0.35, 0, 0) });
+  const steer = new THREE.Group();
+  steer.position.set(0, 0.36, 0.4);
+  steer.add(toonMesh(hb.build()));
+  const gl = anchor("gripL", 0.3, 0.36, -0.08), gr = anchor("gripR", -0.3, 0.36, -0.08);
+  steer.add(gl, gr);
+  // seat anchors are in hull space: world height (shared SEATS) minus the lift
+  const seats = { driver: anchor("driver", 0, 0.62 - 0.12, -0.2, 0) };
+  return new PowerBoat(VehicleKind.Jetski, {
+    hull, body: [body], steer, turn: (a) => { steer.rotation.y = a * 0.4; }, gl, gr, seats,
+    wake: makeWake(9, 2.2, -1.3, 0.25), lift: 0.12, jet: true,
+  }, opts.fx ?? null);
 }
 
-export function createGondola(opts: BoatOptions = {}): VehicleActor {
-  const hull: Hull = { len: 6.4, beam: 1.25, depth: 0.5, sheerBow: 0.75, sheerStern: 0.55, transom: 0.0, pow: 4 };
-  const black = new THREE.Color(0x221e2a);
-  const trim = new THREE.Color(0xd9b56a);
+/** A 1950s Riva-style runabout: varnished mahogany, pastel boot stripe, cream leather, chrome. */
+export function createSpeedboat(opts: BoatOptions = {}): VehicleActor {
+  const hull: Hull = { len: 6.3, beam: 2.05, depth: 0.95, sheerBow: 0.22, sheerStern: 0.04, transom: 0.8, pow: 2, rake: 1.1 };
+  const trim = new THREE.Color(opts.color ?? 0x8fd6c9);
+  const mahogany = new THREE.Color(0xa4552f);
+  const mahoganyDark = new THREE.Color(0x7d3b22);
+  const caulk = new THREE.Color(0xf1d9b0);
+  const bottom = new THREE.Color(0xf4efe6);
   const b = new MeshBuilder();
-  b.add(hullGeometry(hull, 0, 28, 10), {
+  b.add(hullGeometry(hull, 0, 28, 14), {
     colorFn: (p, _n, c) => {
       const top = hullPoint(hull, p.z / hull.len + 0.5, 0, 0, _v).y;
-      c.copy(top - p.y < 0.035 ? trim : black);
+      const dy = top - p.y;
+      // varnished topsides with plank seams, a pastel boot stripe at the water line, white bottom
+      if (dy < 0.5) c.copy(Math.abs(((dy * 9) % 1) - 0.5) < 0.06 ? mahoganyDark : mahogany);
+      else if (dy < 0.62) c.copy(trim);
+      else c.copy(bottom);
     },
   });
-  b.add(hullGeometry(hull, 0.06, 28, 10), { color: 0x3a2a24, flip: true });
-  b.add(rimGeometry(hull, 0.035), { color: 0x2c2733 });
+  // the famous striped deck: mahogany planks with blond caulking lines
+  b.add(deckGeometry(hull, 0.1, 0.005, 0.995, 30, 28), {
+    colorFn: (p, _n, c) => {
+      const s = Math.abs(p.x) / 0.14;
+      c.copy(Math.abs((s % 1) - 0.5) > 0.4 && Math.abs(p.x) > 0.03 ? caulk : mahogany);
+      if (Math.abs(p.x) < 0.03) c.copy(caulk);
+    },
+  });
+  b.add(transomGeometry(hull, 16), { color: mahogany });
+  b.add(rimGeometry(hull, 0.03), { color: CHROME });
+  // cockpit wells (dark leather-lined tubs) with cream bench seats + backrests
   const box = new THREE.BoxGeometry(1, 1, 1);
-  // deck boards front and back, stern platform for the gondolier
-  b.add(box, { color: PALETTE.woodDark, matrix: mat(0, 0.12, 2.3, 0, 0, 0, 0.55, 0.04, 1.2) });
-  b.add(box, { color: PALETTE.woodDark, matrix: mat(0, 0.2, -2.4, 0, 0, 0, 0.5, 0.05, 0.9) });
-  b.add(box, { color: 0x5b3a2a, matrix: mat(0, -0.26, 0, 0, 0, 0, 0.7, 0.03, 3.6) });
-  // passenger bench: red velvet cushion with gold piping + a backrest
-  b.add(new THREE.CapsuleGeometry(0.16, 0.5, 3, 8), { color: 0xb8323f, matrix: mat(0, 0.05, -0.55, 0, 0, Math.PI / 2, 1, 1, 1.4) });
-  b.add(new THREE.CapsuleGeometry(0.12, 0.55, 3, 8), { color: 0xb8323f, matrix: mat(0, 0.32, -0.85, 0.3, 0, Math.PI / 2, 1, 1, 0.6) });
-  b.add(new THREE.TorusGeometry(0.36, 0.02, 4, 16, Math.PI), { color: trim, matrix: mat(0, 0.33, -0.87, -0.3, 0, 0, 1.05, 1, 1) });
-  b.add(new THREE.CapsuleGeometry(0.13, 0.35, 3, 8), { color: 0xb8323f, matrix: mat(0, 0.05, 0.75, 0, 0, Math.PI / 2, 1, 1, 1.3) });
-  // forcola (oarlock post) on the starboard (right, -X) side near the stern
-  b.add(new THREE.CylinderGeometry(0.05, 0.07, 0.5, 6), { color: PALETTE.wood, matrix: mat(-0.5, 0.45, -1.7, 0, 0, 0.1) });
-  b.add(new THREE.TorusGeometry(0.07, 0.03, 4, 8, Math.PI * 1.3), { color: PALETTE.wood, matrix: mat(-0.52, 0.72, -1.7, 0, Math.PI / 2, 0) });
-  // the ferro: a silver comb on the bow topped by a curling scroll
-  const ferro = new THREE.Shape();
-  ferro.moveTo(0, 0);
-  ferro.lineTo(0.05, 0.62);
-  ferro.quadraticCurveTo(0.2, 0.78, 0.4, 0.66);
-  ferro.lineTo(0.36, 0.56);
-  for (let i = 0; i < 6; i++) {
-    const y = 0.5 - i * 0.075;
-    ferro.lineTo(0.3, y);
-    ferro.lineTo(0.14, y - 0.02);
-    ferro.lineTo(0.14, y - 0.045);
-  }
-  ferro.lineTo(0.1, 0);
-  ferro.lineTo(0, 0);
-  const fg = new THREE.ExtrudeGeometry(ferro, { depth: 0.03, bevelEnabled: false, curveSegments: 4 });
-  fg.translate(0, 0, -0.015);
-  const bowTop = hullPoint(hull, 0.985, 0.5, 0, new THREE.Vector3());
-  b.add(fg, { color: 0xe6e9ef, matrix: mat(0, bowTop.y + 0.02, bowTop.z - 0.12, 0, -Math.PI / 2, 0) });
-  // curled prow scroll (brass)
-  const curl: THREE.Vector3[] = [];
-  for (let i = 0; i <= 24; i++) {
-    const a = (i / 24) * Math.PI * 2.4;
-    const r = 0.2 * (1 - i / 30);
-    curl.push(new THREE.Vector3(0, bowTop.y + 0.66 + Math.sin(a) * r, bowTop.z + 0.22 + (1 - Math.cos(a)) * r * -1 + 0.2));
-  }
-  b.add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curl), 30, 0.028, 5), { color: trim });
-  // stern curl
-  const scurl: THREE.Vector3[] = [];
-  const sternTop = hullPoint(hull, 0.015, 0.5, 0, new THREE.Vector3());
-  for (let i = 0; i <= 16; i++) {
-    const a = (i / 16) * Math.PI * 1.6;
-    scurl.push(new THREE.Vector3(0, sternTop.y + Math.sin(a) * 0.14, sternTop.z - 0.02 - (1 - Math.cos(a)) * 0.14 * -1 - 0.1));
-  }
-  b.add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(scurl), 20, 0.035, 5), { color: 0x2c2733 });
-  // brass seahorse-ish side ornaments
-  for (const side of [1, -1]) {
-    b.add(new THREE.SphereGeometry(0.07, 8, 6), { color: trim, matrix: mat(side * 0.5, 0.32, -0.3) });
-    b.add(new THREE.ConeGeometry(0.05, 0.22, 6), { color: trim, matrix: mat(side * 0.5, 0.45, -0.3) });
-  }
-  const body = toonMesh(b.build());
-
-  // long single oar in the forcola, blade trailing aft into the water
-  // oar: from the gondolier's hands, through the forcola, forward-down into the water
-  const H = new THREE.Vector3(0.3, 0.22, -0.65), T = new THREE.Vector3(-0.55, -1.0, 2.3);
-  const od = T.clone().sub(H);
-  const olen = od.length();
-  od.normalize();
-  const oq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), od);
-  const ob = new MeshBuilder();
-  ob.add(new THREE.CylinderGeometry(0.03, 0.03, olen, 6), { color: PALETTE.wood, matrix: new THREE.Matrix4().compose(H.clone().addScaledVector(od, olen / 2), oq, new THREE.Vector3(1, 1, 1)) });
-  ob.add(new THREE.BoxGeometry(0.04, 0.7, 0.2), { color: PALETTE.wood, matrix: new THREE.Matrix4().compose(T.clone().addScaledVector(od, -0.3), oq, new THREE.Vector3(1, 1, 1)) });
-  const oarMesh = new THREE.Mesh(ob.build(), makeToonMaterial({ vertexColors: true }));
-  oarMesh.castShadow = true;
-  const outerG = new THREE.Group();
-  outerG.position.set(-0.55, 0.78, -1.7);
-  const innerG = new THREE.Group();
-  innerG.add(oarMesh);
-  outerG.add(innerG);
-  // handle: the oar runs forward-up from the forcola toward the gondolier's hands
-  const handle = H.clone().addScaledVector(od, 0.05);
-  const seats = {
-    driver: anchor("driver", 0, 0.225, -2.45, 0),
-    passenger: anchor("passenger", 0, 0.2, -0.55, 0),
-    passenger2: anchor("passenger2", 0, 0.18, 0.75, Math.PI),
+  // (seats sit low in the wells: only the rounded backrests show above the deck)
+  const tub = (z: number, len: number) => {
+    b.add(box, { color: 0x5a2f1f, matrix: mat(0, 0.2, z, 0, 0, 0, 1.55, 0.07, len) });
+    for (const side of [1, -1]) b.add(new THREE.BoxGeometry(0.66, 0.06, len * 0.62), { color: CREAM, matrix: mat(side * 0.37, 0.235, z + len * 0.08) });
+    b.add(new THREE.CapsuleGeometry(0.13, 1.15, 3, 10), { color: CREAM, matrix: mat(0, 0.34, z - len * 0.42, 0.3, 0, Math.PI / 2, 1, 1, 0.9) });
+    for (let i = -2; i <= 2; i++) b.add(new THREE.BoxGeometry(0.018, 0.2, 0.018), { color: trim, matrix: mat(i * 0.25, 0.35, z - len * 0.42 + 0.1, 0.3, 0, 0) });
   };
-  return new Boat(VehicleKind.Gondola, { hull, body, oars: [{ mesh: outerG, pivot: outerG.position.clone(), side: -1, handle, dir: od.clone() }], seats, wake: makeWake(6, 1.8, -3.0), standing: true, lift: 0.3 }, opts.fx ?? null);
-}
+  tub(0.3, 1.2);
+  tub(-1.05, 1.0);
+  // windscreen: chrome frame (glass is its own translucent mesh)
+  const ws: THREE.Vector3[] = [];
+  for (let i = 0; i <= 16; i++) {
+    const a = (i / 16 - 0.5) * Math.PI * 0.8;
+    ws.push(new THREE.Vector3(Math.sin(a) * 0.85, 0.24, 0.95 + Math.cos(a) * 0.3));
+  }
+  b.add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(ws), 24, 0.022, 5), { color: CHROME });
+  const wsTop = ws.map((p) => new THREE.Vector3(p.x * 0.96, p.y + 0.3, p.z - 0.1));
+  b.add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(wsTop), 24, 0.02, 5), { color: CHROME });
+  for (const side of [1, -1]) b.add(new THREE.CylinderGeometry(0.015, 0.015, 0.32, 5), { color: CHROME, matrix: mat(side * 0.66, 0.39, 1.1, -0.3, 0, 0) });
+  // chrome deck fittings: bow cleat, running light, stern flag staff
+  b.add(new THREE.CapsuleGeometry(0.025, 0.18, 2, 6), { color: CHROME, matrix: mat(0, 0.34, 2.8, 0, 0, Math.PI / 2) });
+  b.add(new THREE.SphereGeometry(0.05, 8, 6), { color: 0xfff1b0, matrix: mat(0, 0.36, 2.55) });
+  b.add(new THREE.CylinderGeometry(0.015, 0.015, 0.75, 5), { color: CHROME, matrix: mat(0, 0.5, -3.02, -0.25, 0, 0) });
+  // a little pastel pennant on the staff
+  const flag = new THREE.BufferGeometry();
+  flag.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0, -0.22, 0, 0, -0.11, -0.4], 3));
+  flag.computeVertexNormals();
+  b.add(flag, { color: trim, matrix: mat(0, 0.86, -3.12, -0.25, 0, 0) });
+  b.add(flag, { color: trim, matrix: mat(0, 0.86, -3.12, -0.25, 0, 0), flip: true });
+  // transom name plate + chrome rub strakes along the sheer
+  b.add(new THREE.BoxGeometry(0.7, 0.14, 0.02), { color: CHROME, matrix: mat(0, 0.0, -3.14) });
+  const body = toonMesh(b.build());
+  const glass = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.87, 0.85, 0.36, 20, 1, true, -Math.PI * 0.4, Math.PI * 0.8),
+    makeToonMaterial({ color: 0xcfeef7, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+  );
+  glass.position.set(0, 0.39, 0.93);
+  glass.scale.set(1, 0.85, 0.36);
+  glass.rotation.x = -0.28;
 
+  // steering wheel (cream rim, chrome spokes) on the starboard (-X) side
+  const wb = new MeshBuilder();
+  wb.add(new THREE.TorusGeometry(0.19, 0.022, 6, 20), { color: CREAM });
+  for (let i = 0; i < 3; i++) wb.add(new THREE.BoxGeometry(0.018, 0.19, 0.012), { color: CHROME, matrix: mat(0, 0, 0, 0, 0, (i / 3) * Math.PI * 2, 1, 1, 1).multiply(mat(0, 0.095, 0)) });
+  wb.add(new THREE.CylinderGeometry(0.04, 0.04, 0.05, 10), { color: CHROME, matrix: mat(0, 0, 0, Math.PI / 2, 0, 0) });
+  wb.add(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), { color: INK, matrix: mat(0, 0, 0.2, Math.PI / 2, 0, 0) });
+  const wheel = new THREE.Group();
+  wheel.add(toonMesh(wb.build()));
+  // the column leans back toward the driver; the wheel spins about it
+  const steer = new THREE.Group();
+  steer.position.set(-0.4, 0.46, 0.78);
+  steer.rotation.x = -0.5;
+  const spin = new THREE.Group();
+  steer.add(spin);
+  spin.add(wheel);
+  const gl = anchor("gripL", 0.17, 0.03, 0), gr = anchor("gripR", -0.17, 0.03, 0);
+  spin.add(gl, gr);
+  const lift = 0.45;
+  const seats = {
+    driver: anchor("driver", -0.4, 0.55 - lift, 0.3, 0),
+    passenger: anchor("passenger", 0.4, 0.55 - lift, 0.3, 0),
+    passenger2: anchor("passenger2", 0, 0.55 - lift, -1.05, 0),
+  };
+  return new PowerBoat(VehicleKind.Speedboat, {
+    hull, body: [body, glass], steer, turn: (a) => { spin.rotation.z = -a * 1.8; }, gl, gr, seats,
+    wake: makeWake(16, 4.2, -3.0, 0.5), lift, jet: false,
+  }, opts.fx ?? null);
+}
 // ---------------------------------------------------------------------------
 // Vespa
 
@@ -600,10 +669,210 @@ export function createVespa(opts: VespaOptions = {}): VehicleActor {
   return new Vespa(opts.color ?? VESPA_COLORS[0], opts.fx ?? null);
 }
 
+// ---------------------------------------------------------------------------
+// Gyrocopter
+
+export const GYRO_COLORS = [0xf7d77a, 0xf4a99a, 0x9fd8c8, 0xb7d7f0];
+
+class Gyrocopter implements VehicleActor {
+  readonly kind = VehicleKind.Gyrocopter;
+  readonly object = new THREE.Group();
+  readonly seats: VehicleActor["seats"];
+  readonly driverMode: BlobMode = "ride-vespa";
+  readonly driverStanding = false;
+  readonly gripL = new THREE.Vector3();
+  readonly gripR = new THREE.Vector3();
+  private tilt = new THREE.Group();
+  private rotor = new THREE.Group();
+  private prop = new THREE.Group();
+  private propDisc: THREE.Mesh;
+  private wheels: THREE.Mesh[] = [];
+  private stick = new THREE.Group();
+  private gl: THREE.Object3D;
+  private gr: THREE.Object3D;
+  private rotorRate = 0;
+  private propRate = 0;
+  private roll = 0;
+  private pitch = 0;
+  private wheelSpin = 0;
+  private puffT = 0;
+  private wasAir = false;
+
+  constructor(color: THREE.ColorRepresentation, private fx: PaintFx | null) {
+    const paint = new THREE.Color(color);
+    const coral = new THREE.Color(0xe0644f);
+    const cream = new THREE.Color(CREAM);
+    this.object.add(this.tilt);
+    const b = new MeshBuilder();
+    const sph = new THREE.SphereGeometry(1, 20, 14);
+    // egg-shaped pod: paint on top, cream belly, a coral cheat line
+    b.add(sph, {
+      matrix: mat(0, 0.86, 0.2, 0, 0, 0, 0.64, 0.56, 1.15),
+      colorFn: (p, _n, c) => { c.copy(p.y > 0.9 ? paint : p.y > 0.8 ? coral : cream); },
+    });
+    // cockpit opening: dark tub + leather padded coaming
+    b.add(sph, { color: 0x4a3530, matrix: mat(0, 1.25, 0.02, 0, 0, 0, 0.38, 0.12, 0.5) });
+    b.add(new THREE.TorusGeometry(0.4, 0.055, 6, 22), { color: 0x8a5634, matrix: mat(0, 1.3, 0.02, Math.PI / 2, 0, 0, 1, 1.3, 1) });
+    // little windscreen + nose cap + side roundels
+    b.add(new THREE.CylinderGeometry(0.34, 0.3, 0.22, 14, 1, true, -Math.PI * 0.45, Math.PI * 0.9), { color: 0xcfeef7, matrix: mat(0, 1.38, 0.42, -0.35, 0, 0, 1, 1, 0.6) });
+    b.add(sph, { color: coral, matrix: mat(0, 0.86, 1.33, 0, 0, 0, 0.16, 0.15, 0.08) });
+    for (const side of [1, -1]) {
+      b.add(new THREE.CircleGeometry(0.16, 16), { color: cream, matrix: mat(side * 0.64, 0.92, 0.3, 0, side * Math.PI / 2, 0) });
+      b.add(new THREE.CircleGeometry(0.09, 16), { color: coral, matrix: mat(side * 0.645, 0.92, 0.3, 0, side * Math.PI / 2, 0) });
+    }
+    // rotor mast (a slim tripod) and hub
+    for (const [x, z] of [[0, -0.42], [0.14, -0.15], [-0.14, -0.15]]) {
+      const top = new THREE.Vector3(0, 2.5, -0.38), foot = new THREE.Vector3(x, 1.2, z - 0.05);
+      const d = top.clone().sub(foot);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize());
+      b.add(new THREE.CylinderGeometry(0.03, 0.035, d.length(), 6), { color: INK, matrix: new THREE.Matrix4().compose(foot.clone().addScaledVector(d, 0.5), q, new THREE.Vector3(1, 1, 1)) });
+    }
+    b.add(new THREE.CylinderGeometry(0.07, 0.09, 0.14, 10), { color: CHROME, matrix: mat(0, 2.52, -0.38) });
+    // engine + tail boom (under the prop disc) + twin-finned tail
+    b.add(new THREE.CylinderGeometry(0.2, 0.24, 0.42, 12), { color: CHROME, matrix: mat(0, 1.08, -0.95, Math.PI / 2, 0, 0) });
+    b.add(new THREE.CylinderGeometry(0.06, 0.06, 0.1, 8), { color: INK, matrix: mat(0, 1.08, -1.2, Math.PI / 2, 0, 0) });
+    {
+      const a = new THREE.Vector3(0, 0.45, -0.7), c = new THREE.Vector3(0, 0.78, -2.55);
+      const d = c.clone().sub(a);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize());
+      b.add(new THREE.CylinderGeometry(0.045, 0.07, d.length(), 8), { color: paint, matrix: new THREE.Matrix4().compose(a.clone().addScaledVector(d, 0.5), q, new THREE.Vector3(1, 1, 1)) });
+    }
+    b.add(new THREE.BoxGeometry(1.3, 0.04, 0.34), { color: paint, matrix: mat(0, 0.8, -2.5) });
+    for (const side of [1, -1]) {
+      b.add(new THREE.BoxGeometry(0.04, 0.5, 0.4), {
+        matrix: mat(side * 0.64, 0.98, -2.52),
+        colorFn: (p, _n, c) => { c.copy(p.y > 1.12 ? coral : p.y > 0.98 ? cream : coral); },
+      });
+    }
+    // landing gear: struts to three fat little tyres
+    const strut = (x: number, z: number, top: THREE.Vector3) => {
+      const foot = new THREE.Vector3(x, 0.2, z);
+      const d = top.clone().sub(foot);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().normalize());
+      b.add(new THREE.CylinderGeometry(0.025, 0.025, d.length(), 6), { color: INK, matrix: new THREE.Matrix4().compose(foot.clone().addScaledVector(d, 0.5), q, new THREE.Vector3(1, 1, 1)) });
+    };
+    strut(0.72, -0.2, new THREE.Vector3(0.3, 0.55, 0.05));
+    strut(0.72, -0.2, new THREE.Vector3(0.3, 0.5, -0.45));
+    strut(-0.72, -0.2, new THREE.Vector3(-0.3, 0.55, 0.05));
+    strut(-0.72, -0.2, new THREE.Vector3(-0.3, 0.5, -0.45));
+    strut(0, 1.02, new THREE.Vector3(0, 0.5, 0.95));
+    const body = toonMesh(b.build());
+    this.tilt.add(body);
+
+    const wb = new MeshBuilder();
+    wb.add(new THREE.TorusGeometry(0.14, 0.065, 8, 16), { color: 0x2f2a33, matrix: mat(0, 0, 0, 0, Math.PI / 2, 0) });
+    wb.add(new THREE.CylinderGeometry(0.09, 0.09, 0.1, 10), { color: cream, matrix: mat(0, 0, 0, 0, 0, Math.PI / 2) });
+    const wheelGeo = wb.build();
+    const wheelMat = makeToonMaterial({ vertexColors: true });
+    for (const [x, z] of [[0.72, -0.2], [-0.72, -0.2], [0, 1.02]]) {
+      const w = new THREE.Mesh(wheelGeo, wheelMat);
+      w.position.set(x, 0.2, z);
+      w.castShadow = true;
+      this.tilt.add(w);
+      this.wheels.push(w);
+    }
+
+    // rotor: two long cream blades with coral tips, drooping a touch
+    const rb = new MeshBuilder();
+    for (const side of [1, -1]) {
+      rb.add(new THREE.BoxGeometry(3.3, 0.035, 0.22), {
+        matrix: mat(side * 1.72, 0, 0, 0, 0, side * -0.035),
+        colorFn: (p, _n, c) => { c.copy(Math.abs(p.x) > 3.05 ? coral : cream); },
+      });
+    }
+    rb.add(new THREE.CylinderGeometry(0.1, 0.1, 0.08, 10), { color: CHROME });
+    this.rotor.add(toonMesh(rb.build()));
+    this.rotor.position.set(0, 2.6, -0.38);
+    const rotorTilt = new THREE.Group();
+    rotorTilt.rotation.x = -0.08;
+    rotorTilt.position.copy(this.rotor.position);
+    this.rotor.position.set(0, 0, 0);
+    rotorTilt.add(this.rotor);
+    this.tilt.add(rotorTilt);
+
+    // pusher prop behind the engine (+ a faint disc once it's a blur)
+    const pb = new MeshBuilder();
+    for (const side of [1, -1]) pb.add(new THREE.BoxGeometry(0.1, 0.5, 0.03), { color: PALETTE.wood, matrix: mat(0, side * 0.27, 0, 0, 0.3 * side, 0) });
+    pb.add(new THREE.ConeGeometry(0.07, 0.14, 10), { color: coral, matrix: mat(0, 0, -0.06, -Math.PI / 2, 0, 0) });
+    this.prop.add(toonMesh(pb.build()));
+    this.prop.position.set(0, 1.08, -1.28);
+    this.tilt.add(this.prop);
+    this.propDisc = new THREE.Mesh(new THREE.CircleGeometry(0.55, 24), makeToonMaterial({ color: 0xfff4dc, transparent: true, opacity: 0.25, side: THREE.DoubleSide }));
+    this.propDisc.position.set(0, 1.08, -1.28);
+    this.propDisc.visible = false;
+    this.tilt.add(this.propDisc);
+
+    // control stick: the pilot's hands
+    const sb = new MeshBuilder();
+    sb.add(new THREE.CylinderGeometry(0.018, 0.022, 0.42, 6), { color: INK, matrix: mat(0, 0.21, 0) });
+    sb.add(new THREE.CapsuleGeometry(0.03, 0.2, 2, 6), { color: 0x8a5634, matrix: mat(0, 0.42, 0, 0, 0, Math.PI / 2) });
+    this.stick.add(toonMesh(sb.build(), false));
+    this.stick.position.set(0, 0.82, 0.45);
+    this.gl = anchor("gripL", 0.1, 0.42, 0);
+    this.gr = anchor("gripR", -0.1, 0.42, 0);
+    this.stick.add(this.gl, this.gr);
+    this.tilt.add(this.stick);
+
+    this.seats = { driver: anchor("driver", 0, 0.85, 0.02, 0) };
+    this.tilt.add(this.seats.driver);
+  }
+
+  update(dtIn: number, s: VehicleState): void {
+    const dt = Math.min(dtIn, 0.05);
+    const sp = s.speed ?? 0;
+    const steer = clamp(s.steer ?? 0, -1, 1);
+    const air = !!s.airborne;
+    const occ = !!s.occupied;
+    this.object.position.set(s.pos.x, s.pos.y, s.pos.z);
+    this.object.rotation.set(0, s.yaw, 0);
+    // bank into turns in the air, attitude from the sim
+    const k = clamp(Math.abs(sp) / 12, 0, 1);
+    this.roll = lerp(this.roll, -steer * (air ? 0.55 : 0.06) * k, damp(3, dt));
+    this.pitch = lerp(this.pitch, s.pitch ?? 0, damp(6, dt));
+    this.tilt.rotation.set(-this.pitch, 0, this.roll, "XZY");
+    // the rotor free-wheels: spun up by the airflow, winds down slowly on the ground
+    const rotorT = air ? 5.5 + Math.abs(sp) * 0.06 : occ ? 1.5 + Math.abs(sp) * 0.3 : 0;
+    this.rotorRate = lerp(this.rotorRate, rotorT, damp(rotorT > this.rotorRate ? 1.2 : 0.35, dt));
+    this.rotor.rotation.y += this.rotorRate * Math.PI * 2 * dt;
+    const propT = occ ? 9 + Math.max(0, s.throttle ?? 0) * 11 : 0;
+    this.propRate = lerp(this.propRate, propT, damp(propT > this.propRate ? 4 : 1, dt));
+    this.prop.rotation.z += this.propRate * Math.PI * 2 * dt;
+    this.propDisc.visible = this.propRate > 6;
+    (this.propDisc.material as THREE.MeshToonMaterial).opacity = clamp((this.propRate - 6) / 14, 0, 1) * 0.3;
+    // stick follows the controls; wheels roll on the ground
+    this.stick.rotation.set(clamp((s.pitch ?? 0) * -1.2, -0.3, 0.3), 0, -steer * 0.25);
+    if (!air) this.wheelSpin += (sp / 0.2) * dt;
+    for (const w of this.wheels) w.rotation.x = this.wheelSpin;
+    this.object.updateMatrixWorld(true);
+    this.gl.getWorldPosition(this.gripL);
+    this.gr.getWorldPosition(this.gripR);
+    if (!this.fx) { this.wasAir = air; return; }
+    if (this.wasAir && !air) this.fx.dust(_v.set(s.pos.x, s.pos.y + 0.1, s.pos.z), 8);
+    this.wasAir = air;
+    if (!occ) return;
+    this.puffT -= dt;
+    if (this.puffT > 0) return;
+    this.puffT = 0.16 - Math.max(0, s.throttle ?? 0) * 0.08;
+    _v.set(0.15, 1.1, -1.0).applyMatrix4(this.tilt.matrixWorld);
+    this.fx.dust(_v, 1, 0xeeeaf2);
+    // prop wash kicks up dust on the ground run
+    if (!air && Math.abs(sp) > 4) this.fx.dust(_w.set(0, 0.05, -1.4).applyMatrix4(this.tilt.matrixWorld), 1);
+  }
+
+  dispose(): void {
+    disposeTree(this.object);
+  }
+}
+
+export function createGyrocopter(opts: BoatOptions = {}): VehicleActor {
+  return new Gyrocopter(opts.color ?? GYRO_COLORS[0], opts.fx ?? null);
+}
+
 export function createVehicle(kind: VehicleKind, opts: { color?: THREE.ColorRepresentation; fx?: PaintFx | null } = {}): VehicleActor {
   switch (kind) {
-    case VehicleKind.Rowboat: return createRowboat(opts);
-    case VehicleKind.Gondola: return createGondola(opts);
+    case VehicleKind.Jetski: return createJetski(opts);
+    case VehicleKind.Speedboat: return createSpeedboat(opts);
     case VehicleKind.Vespa: return createVespa(opts);
+    case VehicleKind.Gyrocopter: return createGyrocopter(opts);
   }
 }

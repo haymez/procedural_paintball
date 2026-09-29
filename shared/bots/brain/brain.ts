@@ -13,20 +13,21 @@ import { Rng } from "../../math/rng";
 import { atan2, cos, sin, wrapAngle } from "../../math/trig";
 import {
   BALL_GRAVITY, BALL_LIFE, BREATH_TIME, Btn, canShootIn, emptyCmd, eyeHeight, hopperCap, ballSpeed, hasUpgrade, Move,
-  NO_WATER_Y, probeGround, BLOCKED, SNORKEL_MULT, RESPAWN_DELAY,
+  NO_WATER_Y, probeGround, BLOCKED, SNORKEL_MULT,
   type InputCmd, type MatchSim, type PickupState, type PlayerState,
 } from "../../sim/index";
 import { PickupKind } from "../../world/types";
 import { terrainHeight } from "../../world/collide";
 import { Act, actBit, DEFAULT_ACTS, NF } from "../constants";
 import { nearestNode } from "../nav";
-import { randomReachablePoint } from "../path";
+import { findNearest, randomReachablePoint } from "../path";
 import { ballisticAim, findCover, segmentClear, trajectoryClear, type CoverSpot } from "../tactics";
 import type { PathOptions } from "../path";
 import { AimSpring, bodyAimY, scratchPlayer, solveCrosshair, type AimOut } from "./aim";
 import { makeConfig, type BotConfig } from "./config";
 import { getHub, type BotHub, type ShotRec } from "./hub";
 import { clearMove, Navigator, NavStatus, safeStep, type MoveOut } from "./mover";
+import { SkyDiver } from "./skydive";
 import { newStats, St, type BotController, type BotSeatInfo, type BotStats, type PersonalityName } from "./types";
 
 interface Contact {
@@ -66,6 +67,13 @@ export class BotBrain implements BotController {
   readonly cfg: BotConfig;
   readonly stats: BotStats = newStats();
   state: St = St.Roam;
+  // water watchdog
+  private wwT = 0;
+  private wwX = 0;
+  private wwZ = 0;
+  private escapeUntil = 0;
+  private escapeFails = 0;
+  private readonly badShore: number[] = [];
   stateT = 0;
 
   private readonly rng: Rng;
@@ -146,9 +154,8 @@ export class BotBrain implements BotController {
   private jumpGap = false;
   private prevButtons = 0;
   private wasAlive = false;
-  private spawnPressed = false;
   private lastDeadT = 0;
-  private spawnDelay = 2.5;
+  private readonly sky = new SkyDiver();
   private glanceT = 3;
   private glanceYaw = 0;
   private glanceDur = 0;
@@ -209,11 +216,21 @@ export class BotBrain implements BotController {
       return c;
     }
     if (!this.wasAlive) this.onSpawn(sim, p);
+    if (p.move === Move.Glide || p.move === Move.Splat) {
+      // sky drop: glide toward the action (skydive.ts), think afresh once down
+      this.sky.steer(sim, p, hub, this.cfg, this.rng, this.stats, c, dt);
+      this.aim.reset(c.yaw, 0);
+      this.interrupt = true;
+      this.prevButtons = c.buttons;
+      return c;
+    }
+    this.sky.end();
     this.stateT += dt;
     this.stats.stateTime[this.state] += dt;
     this.noticeOwnState(sim, p);
     if ((sim.tick + this.slot) % PERC_EVERY === 0) this.perceive(sim, p, dt * PERC_EVERY);
     else this.trackVisible(sim, dt);
+    this.waterWatch(sim, p, dt);
     this.thinkT -= dt;
     if (this.thinkT <= 0 || this.interrupt) {
       this.decide(sim, p);
@@ -235,32 +252,10 @@ export class BotBrain implements BotController {
       this.contacts.clear();
       this.target = null;
       this.state = St.Dead;
-      this.spawnPressed = false;
       this.cover = null;
-      // humans take a moment to pick: 2-4 s (the sim auto-picks at 5.5 s)
-      this.spawnDelay = RESPAWN_DELAY - 0.9 + this.rng.next() * 1.5 * (1.3 - this.cfg.difficulty * 0.3);
     }
+    void sim;
     void dt;
-    if (this.spawnPressed || p.spawnChoices.length < 2 || p.deadT < this.spawnDelay) return;
-    const sp = sim.world.spawns;
-    const score = (i: number) => {
-      const s = sp[i];
-      if (!s) return -1;
-      let d = 1e9;
-      for (const o of sim.players) {
-        if (o.id === this.id || !o.alive) continue;
-        const dx = o.x - s.x, dz = o.z - s.z;
-        const dd = dx * dx + dz * dz;
-        if (dd < d) d = dd;
-      }
-      return Math.sqrt(d);
-    };
-    let pick = score(p.spawnChoices[0]) >= score(p.spawnChoices[1]) ? 0 : 1;
-    // easy bots don't study the map much; aggressive ones sometimes want the action
-    const r = this.rng.next();
-    if (r < (this.cfg.difficulty === 0 ? 0.35 : 0.1) + this.cfg.pers.aggression * 0.15) pick = 1 - pick;
-    this.cmd.buttons |= pick === 0 ? Btn.SpawnA : Btn.SpawnB;
-    this.spawnPressed = true;
   }
 
   private onSpawn(sim: MatchSim, p: PlayerState): void {
@@ -483,10 +478,52 @@ export class BotBrain implements BotController {
     }
   }
 
+  // =================================================================== water watchdog
+  /** Seconds-long check: a swimmer that isn't getting anywhere heads for a shore it can climb out on. */
+  private waterWatch(sim: MatchSim, p: PlayerState, dt: number): void {
+    const inWater = p.move === Move.Swim || p.move === Move.Underwater;
+    if (!inWater || (this.state === St.Wash && p.coats.length > 0)) {
+      this.wwT = 0; this.wwX = p.x; this.wwZ = p.z;
+      if (!inWater) { this.escapeFails = 0; this.escapeUntil = 0; this.badShore.length = 0; }
+      return;
+    }
+    // stuck = less than 3 m of net progress in 5 s (catches treading water, jittering and circling)
+    this.wwT += dt;
+    if (this.wwT < 5) return;
+    const net = hyp(p.x - this.wwX, p.z - this.wwZ);
+    this.wwT = 0; this.wwX = p.x; this.wwZ = p.z;
+    if (net > 3) return;
+    // the nearest bank didn't work out: look further away each time
+    this.escapeUntil = 0;
+    this.escapeWater(sim, p, 4 + 8 * this.escapeFails);
+    this.escapeFails++;
+    this.stats.stuckEvents++;
+  }
+
+  private escapeWater(sim: MatchSim, p: PlayerState, minD: number): void {
+    if (sim.time < this.escapeUntil && minD === 0) return; // already on the way out
+    const g = this.hub!.bw.nav;
+    // skip shore spots we already tried to climb out at
+    const bad = this.badShore;
+    const land = findNearest(g, { x: p.x, y: p.y, z: p.z }, (n) => {
+      if (!(g.flags[n] & NF.Land) || hyp(g.x[n] - p.x, g.z[n] - p.z) <= minD) return false;
+      for (let k = 0; k < bad.length; k += 2) if (hyp(g.x[n] - bad[k], g.z[n] - bad[k + 1]) < 10) return false;
+      return true;
+    }, 90);
+    if (!land) return;
+    this.setState(St.Roam, sim);
+    this.nav!.go(sim, p, g.x[land.node], g.y[land.node], g.z[land.node], {}, 1.5, 3, true, "shore");
+    this.escapeUntil = sim.time + 12;
+    bad.push(g.x[land.node], g.z[land.node]);
+    if (bad.length > 8) bad.splice(0, 2);
+  }
+
   // =================================================================== decide
   private decide(sim: MatchSim, p: PlayerState): void {
     const now = sim.time, S = this.cfg.skill, P = this.cfg.pers, hub = this.hub!, nav = this.nav!;
     this.chooseTarget(sim, p);
+    // swimming out of a spot we got stuck in: finish that first
+    if (now < this.escapeUntil && (p.move === Move.Swim || p.move === Move.Underwater) && nav.status === NavStatus.Moving) return;
     const t = this.target;
     const tVis = !!t && t.visible;
     const tD = t ? hyp(t.x - p.x, t.z - p.z) : 1e9;
@@ -552,6 +589,12 @@ export class BotBrain implements BotController {
     }
     let uRoam = 0.3;
     if (cur === St.Roam) uRoam += 0.05;
+    // swimming: can't shoot or take cover, so standing (floating) still to fight is pointless;
+    // head for the enemy (and out of the water) instead
+    if (inWater && cur !== St.Wash) {
+      if (t && (uEngage > 0 || uCover > 0)) uChase = Math.max(uChase, uEngage, uCover);
+      uEngage = 0; uCover = 0; uPerch = 0; uHide = 0;
+    }
 
     // ---- pick
     let best = St.Roam as St, bu = uRoam;
@@ -613,7 +656,9 @@ export class BotBrain implements BotController {
         if (fresh || this.flankT <= 0 || nav.status === NavStatus.Failed) this.planFlank(sim, p);
         break;
       case St.Chase:
-        if (t) nav.go(sim, p, t.x, t.y, t.z, {}, 2, 4, fresh, "chase");
+        // close in but nobody can shoot while swimming: climb out at the nearest shore instead
+        if (t && inWater && (hyp(t.x - p.x, t.z - p.z) < 12 || nav.status === NavStatus.Arrived)) this.escapeWater(sim, p, 0);
+        else if (t) nav.go(sim, p, t.x, t.y, t.z, {}, 2, 4, fresh, "chase");
         break;
       case St.Investigate: {
         // approach the noise, but stop short of it

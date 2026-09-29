@@ -4,7 +4,7 @@ export type { BlobActor, BlobState, BlobMode, BlobOptions, BlobFx } from "./blob
 export { createPaintFx, makeGlossyToon } from "./paintFx";
 export type { PaintFx, PaintFxOptions, Vec3Like } from "./paintFx";
 export { createMarkerMesh, MARKER_MUZZLE, MuzzlePuff } from "./marker";
-export { createRowboat, createGondola, createVespa, createVehicle, VESPA_COLORS } from "./vehicles";
+export { createJetski, createSpeedboat, createVespa, createGyrocopter, createVehicle, VESPA_COLORS, JETSKI_COLORS, GYRO_COLORS } from "./vehicles";
 export type { VehicleActor, VehicleState } from "./vehicles";
 export { createZipline, ZIP_HANDLE_DROP } from "./zipline";
 export type { ZiplineActor } from "./zipline";

@@ -144,10 +144,9 @@ export const PAINT_WEAR_DELAY = 5;
 /** …one coat (most recent first) flakes off every this many seconds until clean. Water (WASH_TIME) is faster. */
 export const PAINT_WEAR_TIME = 4;
 export const SPAWN_SHIELD = 2;
+/** Seconds as a puddle before dropping back in from the sky. */
 export const RESPAWN_DELAY = 3;
-/** Auto-pick a spawn this long after elimination. */
-export const SPAWN_AUTOPICK = 5.5;
-/** How long the splat animation runs before the spawn map may open. */
+/** How long the splat animation runs before the drop map opens. */
 export const ELIM_ANIM = 1.1;
 
 // ---------------------------------------------------------------- pickups
@@ -158,13 +157,56 @@ export const DROP_LIFETIME = 35;
 
 // ---------------------------------------------------------------- vehicles
 export const INTERACT_R = 2.8;
-export const ROWBOAT_SPEED = 5.2;
-export const GONDOLA_SPEED = 4.6;
-export const BOAT_ACCEL = 2.6;
-export const BOAT_DRAG = 0.9;
-export const BOAT_TURN = 1.25;
-/** Hull must have this much water under it. */
+// boats (jetski + speedboat): arcade water physics in sim/vehicle.ts
+export const JETSKI_SPEED = 24;
+export const JETSKI_ACCEL = 13;
+export const JETSKI_TURN = 2.5;
+export const SPEEDBOAT_SPEED = 20;
+export const SPEEDBOAT_ACCEL = 7.5;
+export const SPEEDBOAT_TURN = 1.45;
+/** Reverse speed as a fraction of top speed. */
+export const BOAT_REVERSE = 0.22;
+/** Coasting: speed lost per second (fraction of speed + constant m/s²). */
+export const BOAT_DRAG = 0.45;
+export const BOAT_DRAG_C = 1.2;
+/** Hull bottom below the water line: shallower water lifts the hull onto the bottom (beaching). */
 export const BOAT_DRAFT = 0.35;
+/** Sliding up a beach: friction (m/s²) + more the higher the hull is out of the water. */
+export const BOAT_BEACH_FRICTION = 9;
+export const BOAT_BEACH_LIFT_FRICTION = 22;
+/** Ground climbs steeper than this (rise / run) under the bow are a wall, not a beach. */
+export const BOAT_BEACH_SLOPE = 0.38;
+/** Head-on hits (cos of travel vs obstacle normal above this) bounce back at REBOUND of the speed. */
+export const BOAT_HEADON = 0.85;
+export const BOAT_REBOUND = 0.35;
+/** Jetski hop (Jump) and swell kick-up speeds. */
+export const JETSKI_HOP = 6.5;
+export const JETSKI_HOP_MIN_SPEED = 5;
+/** Swell crests are this far apart; crossing one faster than SWELL_SPEED lifts a jetski off the water. */
+export const SWELL_SPACING = 18;
+export const SWELL_SPEED = 17;
+
+// gyrocopter: arcade autogyro flight
+export const GYRO_SPEED = 25;
+/** Airspeed held with the throttle neutral (W speeds up, S slows toward a gentle sink). */
+export const GYRO_CRUISE = 16;
+export const GYRO_ACCEL = 6.5;
+/** Forward airspeed where the rotor carries the craft; below it, it sinks (auto-rotation). */
+export const GYRO_MIN_SPEED = 9;
+/** Ground run: lifts off by itself above this speed. */
+export const GYRO_TAKEOFF_SPEED = 12.5;
+export const GYRO_CLIMB = 7;
+/** Hands off the climb this close (m) above the ground: the gyro keeps climbing out anyway. */
+export const GYRO_CLIMB_OUT = 12;
+export const GYRO_DIVE = 10;
+/** Slowest possible descent with no airspeed (auto-rotation, not a stone). */
+export const GYRO_SINK = 3.2;
+/** Max height above sea level. */
+export const GYRO_CEILING = 140;
+export const GYRO_TURN = 1.25;
+export const GYRO_GROUND_TURN = 1.6;
+/** Touch-downs faster than this bounce. */
+export const GYRO_BOUNCE_V = 5.5;
 export const VESPA_SPEED = 15.5;
 export const VESPA_REVERSE = 4;
 export const VESPA_ACCEL = 8.5;
@@ -204,3 +246,38 @@ export const ZIP_MAX_SPEED = 19;
 /** Feet hang this far below the cable (handle drop + ZIP_HANG in the renderer). */
 export const ZIP_FEET = 2.27;
 export const ZIP_SAG = 0.03;
+
+// ---------------------------------------------------------------- sky drop
+// Every (re)spawn is a drop from high over the island: the blob spreads out
+// like a flying squirrel and glides down wherever the player steers, then
+// splats onto the ground (no damage) and pops back up.
+/** Drop altitude: this far above the island's highest ground, kept within [DROP_MIN_Y, DROP_MAX_Y]. */
+export const DROP_CLEARANCE = 55;
+export const DROP_MIN_Y = 170;
+export const DROP_MAX_Y = 215;
+/** Drops start over the island's middle, scattered within this radius (m). */
+export const DROP_SCATTER = 45;
+/** Glide target velocities: horizontal speed along the view and sink rate (m/s). Neutral = no W/S. */
+export const GLIDE_SPEED = 30;
+export const GLIDE_SINK = 13;
+/** W: nose down, faster and steeper. */
+export const GLIDE_DIVE_SPEED = 40;
+export const GLIDE_DIVE_SINK = 27;
+/** S: flare, slow and flat (the longest reach: every corner of the island). */
+export const GLIDE_FLARE_SPEED = 20;
+export const GLIDE_FLARE_SINK = 5.2;
+/** Shift: tuck the flaps in and plummet (get down right here, now). */
+export const GLIDE_TUCK_SPEED = 8;
+export const GLIDE_TUCK_SINK = 46;
+/** A/D: sideways slip (m/s). */
+export const GLIDE_STRAFE = 11;
+/** How hard the glider chases its target velocity (m/s²): high = easy to land where you want. */
+export const GLIDE_ACCEL = 30;
+export const GLIDE_VACCEL = 26;
+/** Pancaked on landing for this long, then pop back up. */
+export const SPLAT_TIME = 0.42;
+/** Spawn shield: the whole drop, plus this long after touching down. */
+export const DROP_LAND_SHIELD = 1.5;
+/** "Hot zones": hits and eliminations in the last HOT_WINDOW s, clustered within HOT_RADIUS m. */
+export const HOT_WINDOW = 20;
+export const HOT_RADIUS = 40;

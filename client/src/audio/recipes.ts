@@ -428,6 +428,44 @@ function bigSplash(sr: number, rng: Rng, size: number): Mono {
   return x;
 }
 
+/** Sky-drop landing: a soft pancake "splort", then a rubbery boing as the blob pops back up. */
+function skySplat(sr: number, rng: Rng): Mono {
+  const dur = 1.2, n = samples(sr, dur);
+  const x = new Float32Array(n);
+  // the pancake: a low squishy thud and a wet flappy squelch
+  addInto(x, thump(sr, dur, rng.range(95, 115), 45, 0.09), 0, 1.1);
+  const sq = squelch(sr, rng, dur, 1700, 320, 0.06, 2.4, 0.002, 0.09);
+  for (let i = 0; i < n; i++) sq[i] *= 0.65 + 0.35 * Math.sin((TAU * 26 * i) / sr);
+  addInto(x, sq, 0, 1.2);
+  addInto(x, burst(sr, rng, dur, "lp", 900, 0.7, 0.002, 0.05), 0, 0.5);
+  // ...the boing: a springy sine that wobbles up and settles (0.42 s later: SPLAT_TIME)
+  const t0 = 0.4, f0 = rng.range(150, 175);
+  const boing = osc(n, sr, (i) => {
+    const t = Math.max(0, i / sr - t0);
+    return f0 * (1 + 1.2 * (1 - Math.exp(-t / 0.06))) * (1 + 0.12 * Math.exp(-t / 0.18) * Math.sin(TAU * 13 * t));
+  }, "sine");
+  applyEnv(boing, adEnv(sr, 0.008, 0.16, t0));
+  addInto(x, boing, 0, 0.75);
+  addInto(x, bubbles(sr, rng, n, 4, t0, t0 + 0.2, 600, 1400, 0.35, 0.01, 0.025, true), 0, 1);
+  return x;
+}
+
+/** Wind rushing past a gliding blob, with the skin flaps fluttering (loop). */
+function skyWind(sr: number, rng: Rng): Mono {
+  const n = samples(sr, 4);
+  const gust = periodicLfo(n, rng, 1, 5);
+  const rush = periodic(brown(n, rng), (t) => svf(t, sr, "lp", 900, 0.7));
+  const hiss = periodic(white(n, rng), (t) => svf(t, sr, "bp", 2400, 0.8));
+  const flap = 17; // Hz, integer cycles per loop
+  const o = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const g = 0.6 + 0.4 * gust(i);
+    const f = 0.75 + 0.25 * Math.sin((TAU * flap * i) / sr);
+    o[i] = rush[i] * g * 1.4 + hiss[i] * g * f * 0.35;
+  }
+  return o;
+}
+
 function swimStroke(sr: number, rng: Rng): Mono {
   const dur = 0.7, n = samples(sr, dur);
   const sw = svf(white(n, rng), sr, "bp", (i) => 500 + 900 * clamp(i / sr / 0.3, 0, 1), 1);
@@ -551,12 +589,6 @@ function rowStroke(sr: number, rng: Rng): Mono {
   addInto(x, sw, 0, 0.9);
   addInto(x, droplets(sr, rng, n, 6, 0.55, 0.95, 1000, 2400, 0.35), 0, 1);
   return x;
-}
-
-function gondolaCreak(sr: number, rng: Rng): Mono {
-  return creak(sr, rng, 1.0, 35, 95,
-    [[rng.range(270, 330), 8, 1], [rng.range(680, 760), 9, 0.7], [rng.range(1400, 1600), 8, 0.4], [2600, 6, 0.2]],
-    [[0, 0], [0.12, 1], [0.6, 0.8], [0.95, 0]]);
 }
 
 function ziplineAttach(sr: number, rng: Rng): Mono {
@@ -805,6 +837,75 @@ function vespaEngine(sr: number, rng: Rng): Mono {
   return saturate(o, 1.5);
 }
 
+/** Seamless train of short pulses: `firings` per loop, amplitude per firing from amp(k). */
+function pulseTrain(n: number, sr: number, rng: Rng, firings: number, amp: (k: number) => number, jitter: number, len: number): Float32Array {
+  const dry = new Float32Array(n);
+  for (let k = 0; k < firings; k++) {
+    const at = Math.round((k * n) / firings + rng.range(-jitter, jitter) * sr);
+    const a = amp(k);
+    const m = samples(sr, len);
+    for (let i = 0; i < m; i++) dry[(at + i + n) % n] += a * (1 - i / m) * (i === 0 ? 1 : rng.bi() * 0.6);
+  }
+  return dry;
+}
+
+/** Jetski: a revvy little 2-stroke twin (70 Hz firing) + the hiss of the water jet. Pitch it by speed. */
+function jetskiEngine(sr: number, rng: Rng): Mono {
+  const n = samples(sr, 2);
+  const firings = 140;
+  const dry = pulseTrain(n, sr, rng, firings, (k) => (k % 2 ? 0.8 : 1) * rng.range(0.85, 1.1), 0.0004, 0.003);
+  const body = periodic(dry, (t) => {
+    const r = resonators(t, sr, [[260, 3, 0.8], [880, 5, 1], [1750, 6, 0.6], [3300, 5, 0.25]]);
+    return svf(r, sr, "lp", 5200, 0.7);
+  });
+  const jet = periodic(white(n, rng), (t) => svf(t, sr, "bp", 2600, 0.6));
+  const lfo = periodicLfo(n, rng, 3, 9);
+  const o = new Float32Array(n);
+  for (let i = 0; i < n; i++) o[i] = body[i] + jet[i] * (0.09 + 0.03 * lfo(i));
+  return saturate(o, 2);
+}
+
+/** Speedboat: a burbly V8 inboard — lumpy low firing (46 Hz), wet exhaust blubbing at the water line. */
+function inboardEngine(sr: number, rng: Rng): Mono {
+  const n = samples(sr, 2);
+  const firings = 92;
+  // cross-plane V8 lope: uneven pairs of strong / weak pulses
+  const lope = [1, 0.55, 0.85, 0.6, 1, 0.5, 0.9, 0.65];
+  const dry = pulseTrain(n, sr, rng, firings, (k) => lope[k % 8] * rng.range(0.85, 1.15), 0.0012, 0.009);
+  const body = periodic(dry, (t) => {
+    const r = resonators(t, sr, [[95, 2.5, 1.2], [210, 3, 0.9], [480, 4, 0.4], [1100, 4, 0.12]]);
+    return svf(r, sr, "lp", 1800, 0.7);
+  });
+  // the exhaust outlets gulp in and out of the wake
+  const gulp = periodicLfo(n, rng, 5, 11);
+  const blub = bubbles(sr, rng, n, 40, 0, 2, 90, 260, 0.6, 0.02, 0.06, false, true);
+  const o = new Float32Array(n);
+  for (let i = 0; i < n; i++) o[i] = body[i] * (0.8 + 0.2 * gulp(i)) + blub[i] * 0.5;
+  return saturate(o, 1.6);
+}
+
+/** Gyrocopter: a small flat-four aero engine, the pusher prop's buzz and the rotor's slow whup-whup. */
+function gyroEngine(sr: number, rng: Rng): Mono {
+  const n = samples(sr, 2);
+  const firings = 120; // 60 Hz
+  const dry = pulseTrain(n, sr, rng, firings, (k) => (k % 4 === 1 ? 0.75 : 1) * rng.range(0.9, 1.1), 0.0005, 0.005);
+  const body = periodic(dry, (t) => {
+    const r = resonators(t, sr, [[150, 3, 1], [390, 4, 0.7], [820, 4, 0.35]]);
+    return svf(r, sr, "lp", 2600, 0.7);
+  });
+  // prop: 2 blades, blade-pass 90 Hz, a buzzy saw through a lowpass
+  const prop = periodic(osc(n, sr, 90, "saw"), (t) => svf(t, sr, "lp", 900, 1.1));
+  const air = periodic(white(n, rng), (t) => svf(t, sr, "bp", 700, 0.5));
+  const o = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    // rotor: 2 blades at ~4 rev/s → 8 whups a second (16 per 2 s loop, seamless)
+    const whup = 0.5 + 0.5 * Math.cos(TAU * 8 * t);
+    o[i] = body[i] * 0.9 + prop[i] * 0.22 + air[i] * (0.12 + 0.35 * whup * whup * whup);
+  }
+  return saturate(o, 1.4);
+}
+
 function ziplineLoop(sr: number, rng: Rng): Mono {
   const n = samples(sr, 1);
   const wheel = 90; // Hz, integer cycles per loop
@@ -885,6 +986,8 @@ export const SFX = {
   surface_gasp: { cat: "world", variants: 3, target: -16, max: 3, pj: 0.6, ref: 2, maxDist: 40, render: surfaceGasp },
   bubbles: { cat: "world", variants: 4, target: -22, max: 6, pj: 1.5, ref: 1.5, maxDist: 25, render: bubbleBurst },
   washoff: { cat: "self", variants: 2, target: -19, max: 2, pj: 0.3, render: washoff },
+  sky_splat: { cat: "world", variants: 3, target: -14, max: 4, pj: 0.6, ref: 3, maxDist: 70, render: skySplat },
+  sky_wind: { cat: "world", variants: 1, target: -21, loop: true, ref: 3, maxDist: 60, render: skyWind },
   heartbeat: { cat: "self", variants: 1, target: -16, max: 2, pj: 0, render: heartbeat },
   // pickups
   pickup_ammo: { cat: "self", variants: 2, target: -17, max: 3, pj: 0.3, render: pickupAmmo },
@@ -892,10 +995,12 @@ export const SFX = {
   // vehicles
   vespa_horn: { cat: "world", variants: 2, target: -14, max: 3, pj: 0.3, ref: 4, maxDist: 110, render: vespaHorn },
   row_stroke: { cat: "world", variants: 4, target: -21, max: 4, pj: 0.8, ref: 2, maxDist: 45, render: rowStroke },
-  gondola_creak: { cat: "world", variants: 4, target: -23, max: 3, pj: 1, ref: 2, maxDist: 35, render: gondolaCreak },
   zipline_attach: { cat: "world", variants: 2, target: -18, max: 3, pj: 0.5, ref: 2, maxDist: 50, render: ziplineAttach },
   // loops
   vespa_engine: { cat: "world", variants: 1, target: -18, loop: true, ref: 3, maxDist: 120, render: vespaEngine },
+  jetski_engine: { cat: "world", variants: 1, target: -19, loop: true, ref: 3, maxDist: 130, render: jetskiEngine },
+  inboard_engine: { cat: "world", variants: 1, target: -18, loop: true, ref: 4, maxDist: 140, render: inboardEngine },
+  gyro_engine: { cat: "world", variants: 1, target: -18, loop: true, ref: 4, maxDist: 200, render: gyroEngine },
   zipline_whirr: { cat: "world", variants: 1, target: -20, loop: true, ref: 2, maxDist: 70, render: ziplineLoop },
   boat_wake: { cat: "world", variants: 1, target: -22, loop: true, ref: 2, maxDist: 50, render: boatWake },
   water_lap: { cat: "world", variants: 1, target: -24, loop: true, ref: 2, maxDist: 30, render: waterLap },

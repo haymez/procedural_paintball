@@ -8,7 +8,7 @@ import {
   BLOCKED, INTERACT_R, Move, NO_WATER_Y, probeGround, waterAt, ZIP_GRAB_R,
   type MatchSim, type PlayerState, type VehicleState,
 } from "../../sim/index";
-import { VehicleKind } from "../../world/types";
+import { VehicleKind, isBoat } from "../../world/types";
 import { Act, actBit, DEFAULT_ACTS } from "../constants";
 import type { PathOptions, PathResult, Waypoint } from "../path";
 import { DangerMap } from "../tactics";
@@ -287,6 +287,8 @@ export class Navigator {
     if (this.wi === path.length - 1 && hd < 2.5) out.mag = 0.45 + hd * 0.2;
     const act = w.act;
     const inWater = p.move === Move.Swim;
+    // swimming carries momentum: ease off near every waypoint or we circle it
+    if (inWater && hd < 4) out.mag = Math.min(out.mag, 0.35 + hd * 0.16);
     out.sprint = !inWater && (act === Act.Walk || act === Act.Cave || act === Act.JumpDown) && hd > 4;
     if (inWater) out.sprint = p.stamina > 0.5;
 
@@ -349,7 +351,7 @@ export class Navigator {
       case Act.Vehicle:
         return hd < 6 && Math.abs(dy) < 3;
       case Act.Swim:
-        if (hd < (last ? this.arriveR + 0.4 : 1.6) && Math.abs(dy) < 2.5) return true;
+        if (hd < (last ? this.arriveR + 0.6 : 2.4) && Math.abs(dy) < 2.5) return true;
         break;
       default:
         if (hd < (last ? this.arriveR : 0.75) && Math.abs(dy) < 1.9) return true;
@@ -548,6 +550,12 @@ export class Navigator {
       if (this.interactCd <= 0) { out.interact = true; this.interactCd = 0.5; }
       return;
     }
+    if (v.kind === VehicleKind.Gyrocopter) {
+      // bots don't fly: throttle back and hop off
+      out.throttle = -1;
+      if (this.interactCd <= 0) { out.interact = true; this.interactCd = 0.5; }
+      return;
+    }
     if (!this.driving) {
       this.driving = true;
       this.driveT = 0;
@@ -558,10 +566,10 @@ export class Navigator {
     this.driveT += dt;
     // where to: boat -> the landing waypoint; vespa -> a point ahead on the walking path
     let tx = this.gx, tz = this.gz, exitR = 10;
-    const boat = v.kind !== VehicleKind.Vespa;
+    const boat = isBoat(v.kind);
     if (boat) {
       for (let i = this.wi; i < this.path.length; i++) if (this.path[i].act === Act.Vehicle) { tx = this.path[i].x; tz = this.path[i].z; break; }
-      exitR = 5;
+      exitR = 7;
     } else if (this.path.length) {
       // advance along the path while driving; bail before anything a scooter can't do
       while (this.wi < this.path.length - 1) {
@@ -591,6 +599,8 @@ export class Navigator {
     out.steer = -steerLeft;
     out.throttle = Math.abs(ang) > 1.3 ? 0.35 : 1;
     if (!boat && d < 12 && Math.abs(ang) > 0.5) out.throttle = 0.5;
+    // fast boats: ease off coming in to the landing (they beach themselves anyway)
+    if (boat && d < 35) out.throttle = Math.min(out.throttle, 0.3 + d / 40);
     // unstick: speed ~0 while trying to go -> reverse with opposite lock
     if (this.reverseT > 0) {
       this.reverseT -= dt;

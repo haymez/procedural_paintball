@@ -1,7 +1,7 @@
 // Continuous audio for a match: listener, biome ambience, breath heartbeat,
 // Vespa engines, boat wakes, zipline whirr, swim / row strokes.
 import type * as THREE from "three";
-import { Biome, GRID_RES, StructureKind, VehicleKind, WORLD_HALF, type World } from "../../../shared/world/types";
+import { Biome, GRID_RES, StructureKind, VehicleKind, WORLD_HALF, isBoat, type World } from "../../../shared/world/types";
 import { Move, type PlayerState, type SimSnapshot } from "../../../shared/sim/index";
 import type { AmbienceBiome, AmbienceState } from "../audio/index";
 import { sfx, sfxAmbience, sfxBreath, sfxListener, sfxLoop, sfxLoopsBegin, sfxLoopsEnd, sfxLoopTouch } from "./sfx";
@@ -68,26 +68,42 @@ export class AudioScene {
     for (const v of snap.vehicles) {
       const dx = v.x - cp.x, dz = v.z - cp.z;
       if (dx * dx + dz * dz > 120 * 120) continue;
+      const sp = Math.abs(v.speed), thr = Math.max(0, v.throttle);
       if (v.kind === VehicleKind.Vespa && v.seats[0] >= 0) {
         const k = "vespa:" + v.id;
-        sfxLoop(k, "vespa_engine", v, 0.75 + Math.abs(v.speed) / 11 + Math.max(0, v.throttle) * 0.12, 0.8 + Math.max(0, v.throttle) * 0.4);
+        sfxLoop(k, "vespa_engine", v, 0.75 + sp / 11 + thr * 0.12, 0.8 + thr * 0.4);
         sfxLoopTouch(k);
-      } else if (v.kind !== VehicleKind.Vespa && Math.abs(v.speed) > 0.6) {
-        const k = "wake:" + v.id;
-        sfxLoop(k, "boat_wake", v, 0.9 + Math.abs(v.speed) * 0.05, Math.min(1, Math.abs(v.speed) / 4));
+      } else if (v.kind === VehicleKind.Jetski && v.seats[0] >= 0) {
+        // high buzz that screams up with speed (and revs free in the air)
+        const k = "jetski:" + v.id;
+        sfxLoop(k, "jetski_engine", v, 0.8 + sp / 22 + thr * 0.15 + (v.airborne ? 0.25 : 0), 0.65 + thr * 0.35);
+        sfxLoopTouch(k);
+      } else if (v.kind === VehicleKind.Speedboat && v.seats[0] >= 0) {
+        const k = "inboard:" + v.id;
+        sfxLoop(k, "inboard_engine", v, 0.85 + sp / 30 + thr * 0.12, 0.7 + thr * 0.3);
+        sfxLoopTouch(k);
+      } else if (v.kind === VehicleKind.Gyrocopter && (v.seats[0] >= 0 || v.airborne)) {
+        const k = "gyro:" + v.id;
+        sfxLoop(k, "gyro_engine", v, v.seats[0] >= 0 ? 0.85 + thr * 0.3 + sp / 60 : 0.6, v.seats[0] >= 0 ? 0.75 + thr * 0.25 : 0.35);
         sfxLoopTouch(k);
       }
-      // oar strokes
-      if (v.kind !== VehicleKind.Vespa && v.seats[0] >= 0 && Math.abs(v.throttle) > 0.1) {
-        const t = (this.strokeT.get(-1 - v.id) ?? 0) - dt;
-        if (t <= 0) { sfx(v.kind === VehicleKind.Gondola ? "gondola" : "rowStroke", v); this.strokeT.set(-1 - v.id, v.kind === VehicleKind.Gondola ? 1.05 : 0.77); }
-        else this.strokeT.set(-1 - v.id, t);
+      // hull through the water
+      if (isBoat(v.kind) && !v.airborne && sp > 0.6) {
+        const k = "wake:" + v.id;
+        sfxLoop(k, "boat_wake", v, 0.9 + Math.min(sp, 20) * 0.03, Math.min(1, sp / 6));
+        sfxLoopTouch(k);
       }
     }
     for (const p of snap.players) {
       if (!p.alive) continue;
       const dx = p.x - cp.x, dz = p.z - cp.z;
       if (dx * dx + dz * dz > 80 * 80) continue;
+      if (p.move === Move.Glide) {
+        // wind rushing past a sky diver (louder and higher the faster they go)
+        const k = "wind:" + p.id, sp = Math.hypot(p.vx, p.vy, p.vz);
+        sfxLoop(k, "sky_wind", p, 0.8 + sp / 60, Math.min(1.2, 0.35 + sp / 40) * (me?.id === p.id ? 0.8 : 1));
+        sfxLoopTouch(k);
+      }
       if (p.move === Move.Zipline) {
         const k = "zip:" + p.id;
         sfxLoop(k, "zipline_whirr", p, 0.7 + p.zipV / 22, 0.6 + p.zipV / 25);

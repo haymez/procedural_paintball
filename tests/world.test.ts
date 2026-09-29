@@ -9,7 +9,7 @@ import {
 } from "../shared/world/collide";
 import { caveAt, computeReach, trapCells } from "../shared/world/reach";
 import { zipCableY } from "../shared/world/zipline";
-import { NO_WATER, PickupKind, PROP_COLLIDER_RADIUS, PROP_STRIDE, VehicleKind, type World } from "../shared/world/types";
+import { NO_WATER, PickupKind, PROP_COLLIDER_RADIUS, PROP_STRIDE, VehicleKind, isBoat, type World } from "../shared/world/types";
 
 const cache = new Map<number, World>();
 function world(seed: number): World {
@@ -187,9 +187,25 @@ describe.each(SEEDS)("island %i invariants", (seed) => {
     const vespas = w.vehicles.filter((v) => v.kind === VehicleKind.Vespa);
     expect(vespas.length).toBeGreaterThanOrEqual(2);
     for (const v of vespas) expect(R.at(v.x, v.z)).toBe(true);
-    for (const v of w.vehicles.filter((v) => v.kind !== VehicleKind.Vespa)) {
+    for (const v of w.vehicles.filter((v) => isBoat(v.kind))) {
       expect(terrainHeight(w, v.x, v.z)).toBeLessThan(v.y - 0.3);
       expect(waterSurface(c, v.x, v.z)).toBeCloseTo(v.y, 1);
+    }
+    // gyrocopters: on open, dry, reachable ground with a clear, level take-off run ahead
+    const gyros = w.vehicles.filter((v) => v.kind === VehicleKind.Gyrocopter);
+    expect(gyros.length).toBe(2);
+    expect(Math.hypot(gyros[0].x - gyros[1].x, gyros[0].z - gyros[1].z)).toBeGreaterThan(100);
+    for (const v of gyros) {
+      expect(R.at(v.x, v.z)).toBe(true);
+      expect(v.y).toBeGreaterThan(0.5);
+      expect(waterSurface(c, v.x, v.z)).toBeLessThan(terrainHeight(w, v.x, v.z));
+      expect(sdf(c, v.x, v.y + 2, v.z)).toBeGreaterThan(1.3);
+      for (let t = 2; t <= 18; t += 2) {
+        const x = v.x + Math.sin(v.rotY) * t, z = v.z + Math.cos(v.rotY) * t;
+        const g = terrainHeight(w, x, z);
+        expect(Math.abs(g - v.y), `gyro run at ${x.toFixed(0)},${z.toFixed(0)}`).toBeLessThan(3.1);
+        expect(sdf(c, x, g + 2, z)).toBeGreaterThan(1.3);
+      }
     }
     expect(w.ziplines.length).toBeLessThanOrEqual(3);
     for (const z of w.ziplines) {

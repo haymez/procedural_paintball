@@ -128,7 +128,9 @@ export class RemotePlayer {
     if (b && t >= a.tick) {
       const as = a.s, bs = b.s;
       const jump = Math.hypot(bs.x - as.x, bs.y - as.y, bs.z - as.z);
-      const discontinuous = as.alive !== bs.alive || jump > TELEPORT || as.move === Move.Dead || bs.move === Move.Dead;
+      // fast movers (sky-drop gliders at 30-40 m/s, sparse far updates) legitimately cover more than TELEPORT
+      const travel = Math.hypot(as.vx + bs.vx, as.vy + bs.vy, as.vz + bs.vz) * 0.5 * (b.tick - a.tick) * TICK_S;
+      const discontinuous = as.alive !== bs.alive || jump > TELEPORT + travel * 1.25 || as.move === Move.Dead || bs.move === Move.Dead;
       if (discontinuous) {
         const src = t - a.tick < b.tick - t ? as : bs;
         k.x = src.x; k.y = src.y; k.z = src.z; k.vx = src.vx; k.vy = src.vy; k.vz = src.vz; k.yaw = src.yaw;

@@ -16,7 +16,7 @@
 // hierarchical corridor search in path.ts.
 import { buildCollision, CHAMBER_R, freshWater, sdf, sdfNormal, terrainHeight, type CollisionWorld } from "../world/collide";
 import { N, NN, gx, toI } from "../world/grid";
-import { NO_WATER, SEA_LEVEL, VehicleKind, WORLD_HALF, type World } from "../world/types";
+import { NO_WATER, SEA_LEVEL, WORLD_HALF, isBoat, type World } from "../world/types";
 import {
   Act, AGENT_H, BOAT_SPEED, DROP_LAND, DROP_STUMBLE, DROP_WATER, EDGE_SLOPE, FALL_MULT, GRAVITY, INTERACT_R,
   JUMP_SPEED, MANTLE_MAX, MAX_FALL, NF, NODE_SLOPE, RUN_SPEED, STEP_H, SWIM_DEPTH, SWIM_ENTER, SWIM_MANTLE,
@@ -1213,7 +1213,7 @@ function boatLinks(g: NavGraph, eb: EdgeBuf, kind: Uint8Array): void {
   const dist = new Int16Array(NN);
   const q = new Int32Array(NN);
   w.vehicles.forEach((v, vi) => {
-    if (v.kind === VehicleKind.Vespa) return;
+    if (!isBoat(v.kind)) return;
     const board = nearestWhere(g, v.x, 0, v.z, INTERACT_R + 1.5, (n) => Math.abs(g.y[n] - v.y) < 2.6);
     if (board < 0) return;
     dist.fill(-1);

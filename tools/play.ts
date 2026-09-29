@@ -12,7 +12,7 @@ import { loadSettings } from "../client/src/game/settings";
 import { showLoading } from "../client/src/game/loading";
 import { BLOB_COLORS } from "../client/src/render/actors/index";
 import { dummyName } from "../client/src/game/names";
-import { Move, type Dummy, type MatchSim } from "../shared/sim/index";
+import { Move, type MatchSim } from "../shared/sim/index";
 import { BotBrain, prepareBotWorld, setBotIgnore, ST_NAMES } from "../shared/bots/brain/index";
 
 const W = window as unknown as { __ready: boolean; __stats: Record<string, unknown>; __debug: Record<string, unknown> };
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
       const brain = new BotBrain({ id, seed, difficulty: difficulty < 0 ? 1 : difficulty, name: dummyName(i + 3) });
       source.sim.addPlayer(id, { name: dummyName(i + 3), color: BLOB_COLORS[(i + 1 + dummies) % BLOB_COLORS.length], isBot: true });
       brains.push(brain);
-      source.dummies.push({ id, think: (sim: MatchSim, dt: number) => brain.think(sim, id, dt) } as unknown as Dummy);
+      source.dummies.push({ id, think: (sim: MatchSim, dt: number) => brain.think(sim, id, dt) });
     }
     if (params.get("spectate") === "1") setBotIgnore(source.sim, [source.localId]);
   }

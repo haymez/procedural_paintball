@@ -14,8 +14,10 @@ import { PickupKind, VehicleKind, type World } from "../world/types";
 import * as C from "./constants";
 import { createEnv, dist, NO_WATER_Y, probeGround, waterAt, zipPoint, BLOCKED, type SimEnv } from "./env";
 import { bodyHeight, canShootIn, createPlayerState, stepPlayer } from "./player";
-import { createVehicleState, HULL, resetVehicle, seatWorld, stepVehicle, VEHICLE_NAMES } from "./vehicle";
+import { canBoard, createVehicleState, HULL, resetVehicle, seatWorld, stepVehicle, vehicleVerb, VEHICLE_NAMES } from "./vehicle";
 import { computeLaunch, currentSpread, fireInterval, hopperCap, shotRandom, type Launch } from "./weapon";
+import { ActionLog, HOT_W, type HotZone } from "./hotzones";
+import { dropSite, type DropSite } from "./skydrop";
 import {
   Btn, emptyCmd, Fx, Move, Style,
   type InputCmd, type PickupState, type PlayerInfo, type PlayerState, type ProjectileState, type SimEvent, type SimSnapshot, type VehicleState,
@@ -40,6 +42,7 @@ export interface InteractTarget {
 const _v: Vec3 = { x: 0, y: 0, z: 0 };
 const _w: Vec3 = { x: 0, y: 0, z: 0 };
 const _launch: Launch = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, tx: 0, ty: 0, tz: 0 };
+const _zones: HotZone[] = [];
 
 const UPGRADE_NAMES: Record<PickupKind, string> = {
   [PickupKind.Ammo]: "paint",
@@ -82,6 +85,10 @@ export class MatchSim {
    * Return `o` for no rewind, null to skip the target. Null hook = no rewind.
    */
   lagView: ((owner: number, proj: number, o: PlayerState) => PlayerState | null) | null = null;
+  /** Recent hits and eliminations (hot zones for sky drops: bots steer into the action). */
+  readonly action = new ActionLog();
+  /** Where sky drops start (island middle, altitude). */
+  readonly drop: DropSite;
 
   constructor(world: World, opts: MatchOptions = {}) {
     this.world = world;
@@ -93,6 +100,7 @@ export class MatchSim {
       this.pickups.push({ id: i, kind: p.kind, x: p.x, y: g === BLOCKED || g === -Infinity ? p.y : g, z: p.z, active: true, respawn: 0, drop: 0, ttl: 0 });
     });
     this.nextPickup = world.pickups.length;
+    this.drop = dropSite(world);
     world.vehicles.forEach((v, i) => this.vehicles.push(createVehicleState(i, v, this.env)));
     const self = this;
     this.snap = {
@@ -118,8 +126,8 @@ export class MatchSim {
     this.players.push(p);
     this.info.set(id, { id, ...info });
     this.queues.set(id, []);
-    const choices = this.pickSpawns(id);
-    this.respawn(p, choices[0]);
+    // everybody starts the match (or joins it) dropping in from the sky
+    this.skyDrop(p);
     this.events.push({ type: "join", pid: id });
     return p;
   }
@@ -180,7 +188,7 @@ export class MatchSim {
       if (!p.alive) {
         p.prevButtons = cmd.buttons;
         p.yaw = cmd.yaw; p.pitch = cmd.pitch;
-        this.stepDead(p, pressed, dt);
+        this.stepDead(p, dt);
         continue;
       }
       if (p.move === Move.Vehicle && p.seat === 0) {
@@ -193,7 +201,7 @@ export class MatchSim {
       if (pressed & Btn.Interact) this.interact(p);
       this.stepWeapon(p, cmd, pressed, dt);
       this.stepPaint(p, dt);
-      if (p.y < -80) this.respawn(p, this.pickSpawns(p.id)[0]);
+      if (p.y < -80) this.skyDrop(p);
     }
 
     for (let i = 0; i < nv; i++) {
@@ -242,68 +250,64 @@ export class MatchSim {
   }
 
   // ---------------------------------------------------------------- death / respawn
-  private stepDead(p: PlayerState, pressed: number, dt: number): void {
+  private stepDead(p: PlayerState, dt: number): void {
     p.deadT += dt;
-    if (p.deadT >= C.ELIM_ANIM * 0.5 && p.spawnChoices.length === 0) {
-      const c = this.pickSpawns(p.id);
-      p.spawnChoices.push(c[0], c[1]);
-      this.events.push({ type: "spawnChoices", pid: p.id });
-    }
-    if (p.spawnChoices.length) {
-      if (pressed & Btn.SpawnA) p.spawnPick = 0;
-      else if (pressed & Btn.SpawnB) p.spawnPick = 1;
-      if (p.spawnPick < 0 && p.deadT >= C.SPAWN_AUTOPICK) p.spawnPick = 0;
-      if (p.spawnPick >= 0 && p.deadT >= C.RESPAWN_DELAY) this.respawn(p, p.spawnChoices[p.spawnPick]);
-    }
+    if (p.deadT >= C.RESPAWN_DELAY) this.skyDrop(p);
   }
 
-  /** Two spawn indices, preferring points far from living opponents and from each other. */
-  pickSpawns(forId: number): [number, number] {
-    const sp = this.world.spawns;
-    if (sp.length === 0) return [-1, -1];
-    const scored: { i: number; d: number }[] = [];
-    for (let i = 0; i < sp.length; i++) {
-      let d = 1e9;
-      for (const o of this.players) {
-        if (o.id === forId || !o.alive) continue;
-        const dx = o.x - sp[i].x, dz = o.z - sp[i].z;
-        const dd = dx * dx + dz * dz;
-        if (dd < d) d = dd;
-      }
-      scored.push({ i, d: Math.sqrt(d) + this.rng.next() * 40 });
-    }
-    scored.sort((a, b) => b.d - a.d);
-    const top = scored.slice(0, Math.max(2, Math.min(10, (scored.length / 2) | 0)));
-    const a = top[this.rng.int(top.length)].i;
-    let b = -1, bd = -1;
-    for (const s of top) {
-      if (s.i === a) continue;
-      const dx = sp[s.i].x - sp[a].x, dz = sp[s.i].z - sp[a].z;
-      const d = Math.sqrt(dx * dx + dz * dz) + this.rng.next() * 30;
-      if (d > bd) { bd = d; b = s.i; }
-    }
-    return [a, b < 0 ? a : b];
-  }
-
-  respawn(p: PlayerState, spawnIndex: number, at?: { x: number; y: number; z: number }): void {
-    const s = at ?? this.world.spawns[spawnIndex] ?? { x: 0, y: 50, z: 0 };
-    let y = s.y;
-    const g = probeGround(this.env, s.x, s.y + 3, s.z, 10);
-    if (g !== BLOCKED && g !== -Infinity) y = g;
+  /** Back to life with a fresh loadout (position and movement are the caller's). */
+  private revive(p: PlayerState): void {
     this.leaveVehicle(p, false);
-    p.x = s.x; p.y = y + 0.05; p.z = s.z;
     p.vx = 0; p.vy = 0; p.vz = 0;
-    p.move = Move.Air; p.moveT = 0; p.grounded = false; p.coyote = 0; p.dived = false;
+    p.moveT = 0; p.grounded = false; p.coyote = 0; p.dived = false; p.jumpBuf = 0;
     p.alive = true;
     p.coats.length = 0; p.coatBy.length = 0;
     p.upgrades = 0;
     p.hopper = C.HOPPER; p.reserve = C.RESERVE_START; p.reload = 0; p.fireCd = 0.3;
     p.shield = C.SPAWN_SHIELD;
     p.breath = 1; p.gasp = 0; p.wash = 0; p.paintT = 0; p.stamina = 1; p.exhausted = false; p.stumble = 0;
-    p.deadT = 0; p.spawnChoices.length = 0; p.spawnPick = -1;
+    p.deadT = 0;
     p.zip = -1; p.vehicle = -1; p.seat = -1;
+  }
+
+  /** Respawn on the ground at a spawn point (tests, debug; normal respawns are sky drops). */
+  respawn(p: PlayerState, spawnIndex: number, at?: { x: number; y: number; z: number }): void {
+    const s = at ?? this.world.spawns[spawnIndex] ?? { x: 0, y: 50, z: 0 };
+    let y = s.y;
+    const g = probeGround(this.env, s.x, s.y + 3, s.z, 10);
+    if (g !== BLOCKED && g !== -Infinity) y = g;
+    this.revive(p);
+    p.x = s.x; p.y = y + 0.05; p.z = s.z;
+    p.move = Move.Air;
     // face the island centre-ish so you don't spawn staring at a wall of sea
     p.yaw = atan2(-p.x, -p.z);
+    this.events.push({ type: "respawn", pid: p.id, x: p.x, y: p.y, z: p.z });
+  }
+
+  /**
+   * Sky drop: appear high over the middle of the island, gliding (Move.Glide)
+   * wherever you steer, facing the action. Shielded until DROP_LAND_SHIELD s
+   * after touching down.
+   */
+  skyDrop(p: PlayerState): void {
+    const d = this.drop;
+    this.revive(p);
+    const a = this.rng.next() * 6.283185307179586, r = Math.sqrt(this.rng.next()) * C.DROP_SCATTER;
+    p.x = d.cx + sin(a) * r;
+    p.z = d.cz + cos(a) * r;
+    p.y = d.y;
+    p.move = Move.Glide;
+    p.shield = C.DROP_LAND_SHIELD;
+    // face the hottest fight, else the other players, else the island's middle
+    const hot = this.action.zones(this.time, _zones, 1)[0];
+    let tx = d.cx, tz = d.cz, n = 0;
+    if (hot) { tx = hot.x; tz = hot.z; } else {
+      let sx = 0, sz = 0;
+      for (const o of this.players) if (o !== p && o.alive && o.move !== Move.Glide) { sx += o.x; sz += o.z; n++; }
+      if (n) { tx = sx / n; tz = sz / n; }
+    }
+    const fx = tx - p.x, fz = tz - p.z;
+    p.yaw = fx * fx + fz * fz > 25 ? atan2(fx, fz) : this.rng.next() * 6.283185307179586;
     this.events.push({ type: "respawn", pid: p.id, x: p.x, y: p.y, z: p.z });
   }
 
@@ -347,10 +351,9 @@ export class MatchSim {
     victim.moveT = 0;
     victim.vx = 0; victim.vy = 0; victim.vz = 0;
     victim.deadT = 0;
-    victim.spawnChoices.length = 0;
-    victim.spawnPick = -1;
     victim.upgrades = 0;
     victim.reload = 0;
+    this.action.add(this.time, x, z, HOT_W.elim);
     this.events.push({ type: "elim", victim: victim.id, killer: killer ? killer.id : -1, x, y, z, tags, place: this.placeName(victim.x, victim.z), dist: d });
   }
 
@@ -528,6 +531,7 @@ export class MatchSim {
     if (t.move !== Move.Vehicle && t.move !== Move.Zipline && t.move !== Move.Mantle) {
       t.vx += dx * C.HIT_KNOCKBACK; t.vz += dz * C.HIT_KNOCKBACK;
     }
+    this.action.add(this.time, x, z, HOT_W.hit);
     this.events.push({ type: "hit", target: t.id, shooter: b.owner, x, y, z, dx, dz, coats: t.coats.length, color: b.color });
     if (t.coats.length >= C.MAX_COATS) this.eliminate(t, this.player(b.owner), x, y, z);
   }
@@ -584,7 +588,7 @@ export class MatchSim {
       const v = this.vehicles.find((v) => v.id === p.vehicle);
       return { kind: "exit", id: p.vehicle, seat: p.seat, label: v ? `Hop off the ${VEHICLE_NAMES[v.kind]}` : "Hop off", dist: 0 };
     }
-    if (p.move === Move.Zipline || p.move === Move.Mantle) return null;
+    if (p.move === Move.Zipline || p.move === Move.Mantle || p.move === Move.Glide || p.move === Move.Splat) return null;
     let best: InteractTarget | null = null;
     const consider = (t: InteractTarget) => { if (!best || t.dist < best.dist) best = t; };
     for (const v of this.vehicles) {
@@ -592,11 +596,8 @@ export class MatchSim {
       if (d > C.INTERACT_R || Math.abs(p.y - v.y) > 2.6) continue;
       const seat = v.seats.indexOf(-1);
       if (seat < 0) continue;
-      if (v.kind === VehicleKind.Vespa && p.move !== Move.Ground) continue;
-      const verb = v.kind === VehicleKind.Vespa ? (seat === 0 ? "Ride the Vespa" : "Hop on the back") :
-        v.kind === VehicleKind.Rowboat ? (seat === 0 ? "Row the boat" : "Ride along") :
-        seat === 0 ? "Pole the gondola" : "Ride the gondola";
-      consider({ kind: "vehicle", id: v.id, seat, label: verb, dist: d });
+      if (!canBoard(v.kind, p.move)) continue;
+      consider({ kind: "vehicle", id: v.id, seat, label: vehicleVerb(v.kind, seat), dist: d });
     }
     const zs = this.env.ziplines;
     for (let i = 0; i < zs.length; i++) {
@@ -655,6 +656,17 @@ export class MatchSim {
     // right, left, behind, ahead
     const offs = [[-(h.hb + 0.8), 0], [h.hb + 0.8, 0], [0, -(h.hl + 0.8)], [0, h.hl + 0.8]];
     const vx = sy * v.speed, vz = cy * v.speed;
+    if (v.kind === VehicleKind.Gyrocopter && v.airborne) {
+      // bail out mid-flight: drop from beside the cockpit, keeping the craft's momentum
+      for (const lx of [-(h.hb + 0.5), h.hb + 0.5]) {
+        const x = v.x + lx * cy, z = v.z - lx * sy, y = v.y - 0.3;
+        if (dist(this.env, x, y + C.BODY_R + 0.05, z) < C.BODY_R || dist(this.env, x, y + C.BODY_H - C.BODY_R, z) < C.BODY_R) continue;
+        p.x = x; p.y = y; p.z = z;
+        p.vx = vx * 0.85; p.vy = Math.min(v.vy, 1); p.vz = vz * 0.85;
+        p.move = Move.Air; p.moveT = 0; p.grounded = false; p.dived = false;
+        return;
+      }
+    }
     for (const [lx, lz] of offs) {
       const x = v.x + lx * cy + lz * sy, z = v.z - lx * sy + lz * cy;
       const g = probeGround(this.env, x, v.y + 2.2, z, 12);

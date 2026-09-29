@@ -34,11 +34,7 @@ export class Dummy {
     c.moveX = 0;
     c.moveZ = 0;
     if (!p) return c;
-    if (!p.alive) {
-      // pick a spawn after a moment
-      if (p.deadT > 1.6 + this.rng.next()) c.buttons |= this.rng.chance(0.5) ? Btn.SpawnA : Btn.SpawnB;
-      return c;
-    }
+    if (!p.alive) return c; // the sim drops us back in from the sky
     // wander
     this.repick -= dt;
     const dx = this.tx - p.x, dz = this.tz - p.z;

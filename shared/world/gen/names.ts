@@ -106,7 +106,7 @@ export function namesStage(ctx: Ctx, rng: Rng): void {
         nm = uniq(() => "Torre " + rng.pick(["Saracena", "di Guardia", "Vecchia", "del Vento", "Spezzata"]));
         break;
       case "boathouse":
-        nm = uniq(() => rng.pick(["Rimessa ", "Darsena "]) + rng.pick(["dei Pescatori", "Vecchia", "del Porto", "Azzurra"]));
+        nm = uniq(() => rng.pick(["Rimessa ", "Darsena "]) + rng.pick(["dei Motoscafi", "Vecchia", "del Porto", "Azzurra"]));
         break;
       case "shed":
         nm = uniq(() => "Officina " + rng.pick(["Vespa", "Scooter", "del Meccanico", "di Giulio"]));

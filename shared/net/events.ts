@@ -13,7 +13,7 @@ import { Y_MAX, Y_MIN } from "./entities";
 export type NetEvent = SimEvent & { tick: number; seq?: number };
 
 export const EV_TYPES = [
-  "shot", "hit", "shield", "vest", "splat", "splash", "projEnd", "elim", "respawn", "spawnChoices",
+  "shot", "hit", "shield", "vest", "splat", "splash", "projEnd", "elim", "respawn",
   "pickup", "pickupSpawn", "vehicleEnter", "vehicleExit", "vehicleBump", "vehicleReset", "zipStart", "zipEnd",
   "wash", "move", "reload", "reloaded", "empty", "join", "leave", "matchEnd", "wear",
 ] as const;
@@ -113,7 +113,6 @@ export function writeEvent(w: Writer, e: SimEvent & { seq?: number }): void {
       wpos(w, e.x, e.y, e.z);
       w.f16(e.speed);
       break;
-    case "spawnChoices":
     case "reload":
     case "reloaded":
     case "empty":
@@ -193,7 +192,6 @@ export function readEvent(r: Reader, tick: number): NetEvent {
       const p = rpos(r);
       return { type, pid, fx, ...p, speed: r.f16(), tick };
     }
-    case "spawnChoices":
     case "reload":
     case "reloaded":
     case "empty":

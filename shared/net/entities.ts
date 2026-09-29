@@ -12,10 +12,11 @@
 import type { PlayerState, VehicleState } from "../sim/types";
 import { WORLD_HALF } from "../world/types";
 import { PAINT_WEAR_DELAY, PAINT_WEAR_TIME } from "../sim/constants";
-import { field, packIds, packPair, schema, unpackIds, unpackPair, type Field, type Schema } from "./schema";
+import { field, packIds, schema, unpackIds, type Field, type Schema } from "./schema";
 
 export const Y_MIN = -64;
-export const Y_MAX = 192;
+/** Sky drops start up to DROP_MAX_Y (215 m). */
+export const Y_MAX = 256;
 
 // Player flag bits (REMOTE and OWN use the same layout).
 export const PF = {
@@ -160,17 +161,6 @@ export const OWN: Schema<P> = schema<P>("own", [
   num("my1", "f32"),
   num("mz1", "f32"),
   num("mDur", "f32"),
-  field<P>(
-    "spawnChoices",
-    "varu",
-    (s) => packPair(s.spawnChoices),
-    (s, v) => {
-      unpackPair(v, _ids);
-      s.spawnChoices.length = 0;
-      for (const i of _ids) s.spawnChoices.push(i);
-    },
-  ),
-  num("spawnPick", "vari"),
   num("score", "varu"),
   num("deaths", "varu"),
   num("style", "varu"),

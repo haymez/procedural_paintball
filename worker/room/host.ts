@@ -387,7 +387,7 @@ export class MatchHost implements MatchSeam {
       out.moveZ = 0;
       out.yaw = p?.yaw ?? 0;
       out.pitch = 0;
-      out.buttons = p && !p.alive ? Btn.SpawnA : 0;
+      out.buttons = 0;
       return out;
     }
     const c = b.ctl.think(sim, b.id, TICK_DT);
@@ -571,8 +571,6 @@ export class MatchHost implements MatchSeam {
         const dx = e.x - me.x, dz = e.z - me.z;
         return dx * dx + dz * dz < MOVE_FX_RANGE * MOVE_FX_RANGE;
       }
-      case "spawnChoices":
-        return e.pid === c.id;
       default:
         return true;
     }

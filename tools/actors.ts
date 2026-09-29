@@ -3,7 +3,7 @@
 //
 // Query params:
 //   focus=blob&mode=run   close-up of a hero blob holding a mode
-//   focus=lineup|water|rowboat|gondola|vespa|zipline|pickups|duel|stress
+//   focus=lineup|water|jetski|speedboat|gyro|jetski-parked|speedboat-parked|gyro-parked|vespa|zipline|pickups|duel|stress
 //   coats=2 wet=0.8 aim=0.3 fire=1   hero state
 //   stress=20 [solo=1]    N blobs running in a ring (solo hides the rest)
 //   cycle=1               lineup blobs cycle through modes
@@ -14,7 +14,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
-  createBlob, createPaintFx, createRowboat, createGondola, createVespa, createZipline, createPickup, createNameTag,
+  createBlob, createPaintFx, createJetski, createSpeedboat, createGyrocopter, createVespa, createZipline, createPickup, createNameTag,
   BLOB_COLORS, BLOB_MODES, SWIM_WATERLINE,
   type BlobActor, type BlobState, type BlobMode, type NameTag, type VehicleActor, type PickupActor,
 } from "../client/src/render/actors";
@@ -275,6 +275,26 @@ addDemo("wet → sea", lineup, mkState(10, ground0, LZ), (d, _dt, t) => {
 // ---------------------------------------------------------------- water
 const WATER = new THREE.Group();
 world.add(WATER);
+// sky drop: glide in like a flying squirrel, splat, pop back up
+addDemo("sky drop", lineup, mkState(12.5, ground0, LZ, -Math.PI / 2), (d, dt) => {
+  const s = d.st, m = d.mem;
+  m.t = ((m.t ?? 0) + dt) % 5.5;
+  const t = m.t, T = 2.4, x0 = 12.5;
+  if (t < T) {
+    const k = 1 - t / T;
+    s.mode = "glide";
+    s.grounded = false;
+    s.pos.set(x0 + k * 26, ground0 + k * 11, LZ);
+    s.vel.set(-26 / T, -11 / T - (t < 0.3 ? 8 : 0), 0);
+  } else {
+    s.pos.set(x0, ground0, LZ);
+    s.vel.set(0, 0, 0);
+    s.grounded = true;
+    s.mode = t < T + 0.42 ? "splat" : "idle";
+    if (!m.landed) { m.landed = 1; fx.ring({ x: x0, y: ground0 + 0.05, z: LZ }, 0xf3e0bb, 2.6, 0.6); fx.dust({ x: x0, y: ground0 + 0.1, z: LZ }, 12); }
+  }
+  if (t < T) m.landed = 0;
+});
 addDemo("swim", WATER, mkState(-3, -SWIM_WATERLINE, -11, 0.6), (d, _dt, t) => {
   d.st.mode = "swim";
   d.st.wetness = 1;
@@ -320,16 +340,21 @@ addDemo("dive", WATER, mkState(3, DOCK_TOP, -4.6, Math.PI), (d, dt) => {
 // ---------------------------------------------------------------- vehicles
 const VEH = new THREE.Group();
 world.add(VEH);
-const rowboat = createRowboat({ fx });
-const gondola = createGondola({ fx });
+const jetski = createJetski({ fx });
+const speedboat = createSpeedboat({ fx });
+const gyro = createGyrocopter({ fx });
+const gyroParked = createGyrocopter({ color: 0xf4a99a });
+const jetskiParked = createJetski({ color: 0xf6b8c0 });
+const speedboatParked = createSpeedboat({ color: 0xf6c7c0 });
 const vespa = createVespa({ fx });
 const vespaParked = createVespa({ color: 0xf6c7c0 });
-VEH.add(rowboat.object, gondola.object, vespa.object, vespaParked.object);
-interface Ride { v: VehicleActor; center: THREE.Vector3; r: number; w: number; t0: number; y: number; water: boolean }
+VEH.add(jetski.object, speedboat.object, gyro.object, gyroParked.object, jetskiParked.object, speedboatParked.object, vespa.object, vespaParked.object);
+interface Ride { v: VehicleActor; center: THREE.Vector3; r: number; w: number; t0: number; y: number; water: boolean; pitch?: number; air?: boolean }
 const rides: Ride[] = [
-  { v: rowboat, center: new THREE.Vector3(-11, 0, -18), r: 6, w: 0.22, t0: 0, y: 0, water: true },
-  { v: gondola, center: new THREE.Vector3(11, 0, -20), r: 8, w: -0.14, t0: 1, y: 0, water: true },
+  { v: jetski, center: new THREE.Vector3(-11, 0, -19), r: 7, w: 1.2, t0: 0, y: 0, water: true, pitch: 0.05 },
+  { v: speedboat, center: new THREE.Vector3(11, 0, -21), r: 9, w: -0.8, t0: 1, y: 0, water: true, pitch: 0.08 },
   { v: vespa, center: new THREE.Vector3(1, groundH(0, 13), 13), r: 5.5, w: 0.75, t0: 0, y: groundH(0, 13), water: false },
+  { v: gyro, center: new THREE.Vector3(0, 8, -6), r: 13, w: 0.9, t0: 2, y: 8, water: false, pitch: 0.06, air: true },
 ];
 const rideState = (r: Ride, t: number) => {
   const a = r.t0 + t * r.w;
@@ -350,12 +375,16 @@ function seatDemo(name: string, v: VehicleActor, seat: "driver" | "passenger" | 
     }
   });
 }
-const rower = seatDemo("row", rowboat, "driver", "row");
-const rowPass = seatDemo("passenger", rowboat, "passenger", "passenger");
-const gondolier = seatDemo("row (standing)", gondola, "driver", "row");
-const gondPass = seatDemo("passenger", gondola, "passenger", "passenger");
+const jetRider = seatDemo("jetski", jetski, "driver", "ride-vespa");
+const boatDriver = seatDemo("speedboat", speedboat, "driver", "ride-vespa");
+const boatPass = seatDemo("passenger", speedboat, "passenger", "passenger");
+const boatPass2 = seatDemo("passenger", speedboat, "passenger2", "passenger");
+const pilot = seatDemo("gyro", gyro, "driver", "ride-vespa");
 const rider = seatDemo("ride-vespa", vespa, "driver", "ride-vespa");
 vespaParked.object.position.set(14, groundH(14, 5), 5);
+gyroParked.object.position.set(-13, groundH(-13, 4), 4);
+jetskiParked.object.position.set(-24, 0, -8);
+speedboatParked.object.position.set(24, 0, -9);
 
 // ---------------------------------------------------------------- zipline
 const zip = createZipline(ZA, ZB);
@@ -466,11 +495,14 @@ const hero = addDemo("hero", HERO, mkState(HERO_LAND.x, HERO_LAND.y, HERO_LAND.z
     case "mantle": s.grounded = false; s.pos.y += 0.5; break;
     case "ride-vespa": case "row": case "passenger": s.pos.y += 0.45; break;
     case "zipline": s.grounded = false; s.pos.y += 0.4; break;
+    case "glide": s.grounded = false; s.pos.y += 2.2; s.vel.set(0, -13 * (heroPatch.sink ?? 1), 30 * (heroPatch.speed ?? 1)); break;
   }
   void m; void dt;
 });
 let heroMode: BlobMode = "idle";
-const heroPatch: { coats?: number; wet?: number; aim?: number; fire?: number; breath?: number } = {};
+const heroPatch: { coats?: number; wet?: number; aim?: number; fire?: number; breath?: number; sink?: number; speed?: number } = {};
+if (qs.has("sink")) heroPatch.sink = num("sink", 1);
+if (qs.has("speed")) heroPatch.speed = num("speed", 1);
 if (qs.has("coats")) heroPatch.coats = num("coats", 0);
 if (qs.has("wet")) heroPatch.wet = num("wet", 0);
 if (qs.has("aim")) heroPatch.aim = num("aim", 0);
@@ -535,8 +567,12 @@ function setFocus(what: string, mode?: string): void {
     }
     case "lineup": camTo(0, 5.5, lz + 15, 0, 1, lz); break;
     case "water": camTo(-1, 3.5, -2, 0, -0.8, -11); break;
-    case "rowboat": follow = { obj: () => rowboat.object.position, off: new THREE.Vector3(4, 3, 4.5), look: new THREE.Vector3(0, 0.6, 0) }; break;
-    case "gondola": follow = { obj: () => gondola.object.position, off: new THREE.Vector3(6, 3.5, 6), look: new THREE.Vector3(0, 0.8, 0) }; break;
+    case "jetski": follow = { obj: () => jetski.object.position, off: new THREE.Vector3(3.5, 2.2, 3.5), look: new THREE.Vector3(0, 0.6, 0) }; break;
+    case "speedboat": follow = { obj: () => speedboat.object.position, off: new THREE.Vector3(6, 3.5, 6), look: new THREE.Vector3(0, 0.8, 0) }; break;
+    case "gyro": follow = { obj: () => gyro.object.position, off: new THREE.Vector3(5, 2.5, 5), look: new THREE.Vector3(0, 1.2, 0) }; break;
+    case "jetski-parked": camTo(-24 + 2.6, 1.6, -8 + 2.4, -24, 0.35, -8); break;
+    case "speedboat-parked": camTo(24 - 5.5, 3.2, -9 + 5, 24, 0.4, -9); break;
+    case "gyro-parked": camTo(-13 + 4.5, groundH(-13, 4) + 2.6, 4 + 4.5, -13, groundH(-13, 4) + 1.1, 4); break;
     case "vespa": follow = { obj: () => vespa.object.position, off: new THREE.Vector3(3, 1.8, 3), look: new THREE.Vector3(0, 0.8, 0) }; break;
     case "vespa-parked": camTo(14 + 2.2, groundH(14, 5) + 1.2, 5 + 2.2, 14, groundH(14, 5) + 0.5, 5); break;
     case "zipline": follow = { obj: () => zipper.blob.object.position, off: new THREE.Vector3(2.6, 0.6, -4.2), look: new THREE.Vector3(0, 1.6, 0) }; break;
@@ -567,15 +603,19 @@ function tick(dt: number): void {
   // vehicles first (seats + grips), then blobs
   for (const r of rides) {
     const s = rideState(r, t);
-    r.v.update(dt, { pos: s.pos, yaw: s.yaw, speed: s.speed, steer: s.steer, occupied: true, throttle: 0.6 });
+    r.v.update(dt, { pos: s.pos, yaw: s.yaw, speed: s.speed, steer: s.steer, occupied: true, throttle: 0.8, pitch: r.pitch, airborne: r.air });
   }
   vespaParked.update(dt, { pos: vespaParked.object.position.clone(), yaw: -0.6, speed: 0, occupied: false });
+  gyroParked.update(dt, { pos: gyroParked.object.position.clone(), yaw: 0.7, speed: 0, occupied: false });
+  jetskiParked.update(dt, { pos: jetskiParked.object.position.clone(), yaw: 1.9, speed: 0, occupied: false });
+  speedboatParked.update(dt, { pos: speedboatParked.object.position.clone(), yaw: -2.2, speed: 0, occupied: false });
   const boatVel = (r: Ride) => rideState(r, t).vel;
-  rower.st.vel = boatVel(rides[0]); rowPass.st.vel = boatVel(rides[0]);
-  gondolier.st.vel = boatVel(rides[1]); gondPass.st.vel = boatVel(rides[1]);
+  jetRider.st.vel = boatVel(rides[0]);
+  boatDriver.st.vel = boatVel(rides[1]); boatPass.st.vel = boatVel(rides[1]); boatPass2.st.vel = boatVel(rides[1]);
   rider.st.vel = boatVel(rides[2]);
-  rowPass.mem.baseYaw = rowboat.object.rotation.y;
-  gondPass.mem.baseYaw = gondola.object.rotation.y;
+  pilot.st.vel = boatVel(rides[3]);
+  boatPass.mem.baseYaw = speedboat.object.rotation.y;
+  boatPass2.mem.baseYaw = speedboat.object.rotation.y;
 
   // duel
   duelT += dt;
@@ -672,7 +712,7 @@ let frames = 0, acc = 0, last = performance.now();
 const hud = document.getElementById("hud")!;
 function renderHud(): void {
   hud.innerHTML = `<b>Isola actors</b> · <span id="st"></span><br>` +
-    ["lineup", "water", "rowboat", "gondola", "vespa", "zipline", "pickups", "duel"].map((w) => `<button data-f="${w}">${w}</button>`).join("") +
+    ["lineup", "water", "jetski", "speedboat", "gyro", "gyro-parked", "vespa", "zipline", "pickups", "duel"].map((w) => `<button data-f="${w}">${w}</button>`).join("") +
     "<br>" + BLOB_MODES.map((m) => `<button data-m="${m}">${m}</button>`).join("") +
     `<br><button data-s="20">stress 20</button><button data-t>tags</button>`;
 }
@@ -707,7 +747,7 @@ const debug = {
       return n;
     };
     out.blobMesh = count(demos[0].blob.mesh) - 0;
-    out.rowboat = count(rowboat.object); out.gondola = count(gondola.object); out.vespa = count(vespa.object);
+    out.jetski = count(jetski.object); out.speedboat = count(speedboat.object); out.gyro = count(gyro.object); out.vespa = count(vespa.object);
     out.pickup = count(pickups[1].object); out.ammo = count(pickups[0].object); out.zip = count(zip.object);
     return out;
   },

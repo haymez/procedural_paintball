@@ -157,8 +157,8 @@ export function fakeWorld(seed: number, skipDecor = false): { world: World; timi
   }
   const vehicles = [];
   for (let i = 0; i < 7; i++) {
-    const kind = i < 3 ? VehicleKind.Rowboat : i < 4 ? VehicleKind.Gondola : VehicleKind.Vespa;
-    const [x, z] = kind === VehicleKind.Vespa ? landPoint(5) : landPoint(-2, -0.5);
+    const kind = i < 3 ? VehicleKind.Jetski : i < 4 ? VehicleKind.Speedboat : i < 6 ? VehicleKind.Vespa : VehicleKind.Gyrocopter;
+    const [x, z] = kind === VehicleKind.Vespa || kind === VehicleKind.Gyrocopter ? landPoint(5) : landPoint(-2, -0.5);
     vehicles.push({ kind, x, y: h(x, z), z, rotY: rnd() * Math.PI * 2 });
   }
   const ziplines = [];

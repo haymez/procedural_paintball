@@ -2,7 +2,7 @@
 // simulated network (delay + jitter) on a virtual clock.
 import { beforeAll, describe, expect, it } from "vitest";
 import { generateWorld } from "../shared/world/generate";
-import { Btn, NO_WATER_Y, createEnv, waterAt, type SimEnv } from "../shared/sim/index";
+import { Btn, Move, NO_WATER_Y, createEnv, waterAt, type SimEnv } from "../shared/sim/index";
 import { sdf, terrainHeight } from "../shared/world/collide";
 import { VehicleKind, type World } from "../shared/world/types";
 import { InputBuffer } from "../worker/room/inputs";
@@ -387,11 +387,11 @@ describe("vehicles and respawns", () => {
     expect(b.nc.remote(1)!.vehicle).toBe(v.id);
   }, 60000);
 
-  it("elimination, spawn choice and respawn reach the victim in order", async () => {
+  it("elimination and the sky-drop respawn reach the victim in order; the glide predicts cleanly", async () => {
     const h = new Harness(world);
     await h.start();
     const a = h.join(1, { owd: 60, jitter: 10 });
-    h.join(2, { owd: 20 });
+    const b = h.join(2, { owd: 20 });
     h.run(600);
     const events: string[] = [];
     const sim = h.host.sim!;
@@ -401,15 +401,31 @@ describe("vehicles and respawns", () => {
     h.run(2000, () => drain());
     expect(a.nc.me()!.alive).toBe(false);
     expect(events).toContain("elim");
-    expect(a.nc.me()!.spawnChoices.length).toBe(2);
-    h.run(3000, (c) => { drain(); c.cmd.buttons = c === a ? Btn.SpawnB : 0; });
+    h.run(1500, () => drain());
     drain();
     const me = a.nc.me()!;
     expect(me.alive).toBe(true);
+    expect(me.move).toBe(Move.Glide);
     expect(events.indexOf("elim")).toBeLessThan(events.lastIndexOf("respawn"));
-    expect(events.indexOf("spawnChoices")).toBeLessThan(events.lastIndexOf("respawn"));
+    // steer the glide around: prediction keeps up without corrections
+    const c0 = a.nc.totals.corrections;
+    let t = 0;
+    h.run(4000, (c) => {
+      if (c !== a) return;
+      c.cmd.yaw = 0.5 + Math.sin(t / 50) * 1.2;
+      c.cmd.moveZ = t % 240 < 120 ? 1 : -1;
+      c.cmd.moveX = t % 300 < 60 ? 1 : 0;
+      c.cmd.buttons = t % 400 > 360 ? Btn.Sprint : 0;
+      t++;
+    });
     const sp = sim.player(1)!;
-    expect(Math.hypot(sp.x - me.x, sp.z - me.z)).toBeLessThan(0.5);
+    expect(sp.move).toBe(Move.Glide);
+    expect(a.nc.totals.corrections - c0).toBeLessThanOrEqual(1);
+    // (the predicted copy runs ~RTT ahead: a few meters at glide speed)
+    const me2 = a.nc.me()!;
+    expect(Math.hypot(sp.x - me2.x, sp.z - me2.z)).toBeLessThan(6);
+    // the other client sees a glider
+    expect(b.nc.remote(1)!.move).toBe(Move.Glide);
     expect(sim.results().find((r) => r.id === 2)!.score).toBe(1);
   }, 60000);
 });

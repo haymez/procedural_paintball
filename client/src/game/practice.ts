@@ -1,5 +1,5 @@
 // Practice: the offline game — the whole match sim runs in this tab against
-// dummy bots. Reached from the title screen (/practice).
+// the real bot AI. Reached from the title screen (/practice).
 import { prefs } from "../net/session";
 import { PLAYER_COLORS } from "../../../shared/net/rules";
 import { createWorldRenderer, createWorldViewAsync, type WorldView } from "../render/worldView";
@@ -47,7 +47,7 @@ export function startPractice(mount: HTMLElement, opts: PracticeOptions): Practi
       if (disposed) return;
       const ci = prefs.color >= 0 ? prefs.color : 0;
       const hex = parseInt((PLAYER_COLORS[ci]?.hex ?? "#ff9eb5").slice(1), 16);
-      const source = new LocalSource(world, { name: prefs.name, color: hex, dummies: opts.bots ?? 7, durationSec: (opts.minutes ?? 10) * 60 });
+      const source = new LocalSource(world, { name: prefs.name, color: hex, bots: opts.bots ?? 7, durationSec: (opts.minutes ?? 10) * 60 });
       game = new Game({ mount, world, source, renderer: r, view, settings, intro: true, onLeave: () => opts.onExit(), onPlayAgain: () => opts.onExit() });
       const W = window as unknown as { __debug: unknown; __stats: unknown };
       W.__debug = game.debugApi();

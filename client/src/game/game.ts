@@ -5,18 +5,19 @@ import { raycast, terrainHeight } from "../../../shared/world/collide";
 import { PickupKind, VehicleKind, type World } from "../../../shared/world/types";
 import {
   Btn, ELIM_ANIM, Fx, Move, NO_WATER_Y, TICK_DT, canShootIn, currentSpread, eyePos, hasUpgrade, segCapsule, upgradeName,
-  type InputCmd, type SimEvent,
+  type InputCmd, type PlayerState, type SimEvent,
 } from "../../../shared/sim/index";
 import type { WorldView } from "../render/worldView";
 import { Actors } from "./actors";
 import { AimArc } from "./arc";
 import { CameraRig, type CamContext } from "./camera";
-import { Hud } from "./hud/hud";
+import { Hud, type HudFrame } from "./hud/hud";
 import { Input, type InputOverride, type MoveSample } from "./input";
 import { DEATH_TITLES, ELIM_TITLES, STREAK_TITLES } from "./names";
 import { saveSettings, type Settings } from "./settings";
 import { audioStats, initSfx, recentSfx, sfx, sfxStopAll, sfxVolume } from "./sfx";
 import { AudioScene } from "./audioScene";
+import { SkyDropView } from "./skydrop";
 import type { GameSource } from "./source";
 
 export interface GameOptions {
@@ -34,6 +35,8 @@ export interface GameOptions {
 
 /** A frame gap longer than this (s) is a stall (hidden tab, debugger, GC storm): resync instead of catching up. */
 const RESYNC_GAP = 0.25;
+/** Subtitles for a sky-drop touchdown. */
+const LANDING_QUIPS = ["nailed the landing", "graceful. mostly.", "boing!", "10 / 10 from the judges", "that'll buff out", "gummy physics"];
 /** Seconds the last attacker stays marked. */
 const ATTACKER_SHOW = 4.5;
 
@@ -49,6 +52,7 @@ export class Game {
   readonly hud: Hud;
   readonly arc: AimArc;
   readonly audio: AudioScene;
+  readonly sky: SkyDropView;
   private view: WorldView;
   private renderer: THREE.WebGLRenderer;
   private settings: Settings;
@@ -63,10 +67,11 @@ export class Game {
   private hitStop = 0;
   private time = 0;
   private noise = new Map<number, number>();
-  private spawnPickBits = 0;
-  private spawnPickTicks = 0;
+  /** Sky drop: was I gliding / splatting last frame; seconds left of easing the view back after touch-down. */
+  private wasDropping = false;
+  private landEase = 0;
   private deathT = 0;
-  private spawnMapShown = false;
+  private dropMapShown = false;
   private resultsShown = false;
   private camCtx: CamContext = { move: Move.Ground, aiming: false, scope: false, sprinting: false, speed: 0, vehicle: -1, driver: false, steer: 0, dead: false, deathT: 0 };
   private deathPos = new THREE.Vector3();
@@ -77,6 +82,8 @@ export class Game {
   private simAvg = 0;
   private footT = 0;
   private lookIdle = 0;
+  /** Gyro yaw last frame (A/D turns carry the view along). */
+  private gyroYaw: number | null = null;
   private aimOnPlayer = false;
   private whizzed = new Set<number>();
   private lastSecond = -1;
@@ -108,8 +115,8 @@ export class Game {
     this.arc = new AimArc(myColor);
     this.audio = new AudioScene(opts.world);
     this.view.scene.add(this.arc.group);
+    this.sky = new SkyDropView(this.view.scene, this.source.env);
     this.hud = new Hud(opts.mount, opts.world, {
-      onSpawnPick: (i) => this.pickSpawn(i),
       onResume: () => { this.hud.showPause(false); this.input.lock(); },
       onLeave: () => this.opts.onLeave?.(),
       onSettings: (s) => { saveSettings(s); this.rig.baseFov = s.fov; sfxVolume(s.volume); },
@@ -126,11 +133,11 @@ export class Game {
       onMap: () => { if (!this.deadNow()) this.hud.toggleMap(); },
       onScoreboard: (o) => this.hud.setScoreboard(o),
       onShoulder: () => { this.rig.side = this.rig.side > 0 ? -1 : 1; this.settings.shoulder = this.rig.side as 1 | -1; saveSettings(this.settings); },
-      onSpawnPick: (i) => { if (this.deadNow()) this.pickSpawn(i); },
       onLockChange: (locked) => { if (!locked && !this.hud.paused && !this.resultsShown) { /* Esc via browser */ this.hud.showPause(true); } else if (locked) this.hud.showPause(false); },
     });
     const me = this.source.me();
-    if (me) { this.input.yaw = this.landward(me.x, me.z, me.yaw); this.input.pitch = -0.08; }
+    if (me && me.move === Move.Glide) this.startDrop(me);
+    else if (me) { this.input.yaw = this.landward(me.x, me.z, me.yaw); this.input.pitch = -0.08; }
     void initSfx().then(() => sfxVolume(this.settings.volume));
     window.addEventListener("resize", this.onResize);
     this.onResize();
@@ -162,17 +169,34 @@ export class Game {
     return !(this.source.me()?.alive ?? true);
   }
 
-  private pickSpawn(i: number): void {
-    this.spawnPickBits = i === 0 ? Btn.SpawnA : Btn.SpawnB;
-    this.spawnPickTicks = 6;
-    sfx("uiClick");
+  /** Dropping in from the sky: face the action, look down at the island. */
+  private startDrop(me: PlayerState): void {
+    this.sky.refresh(this.source.snapshot().time);
+    this.input.yaw = this.dropFacing(me);
+    this.input.pitch = -0.62;
+    this.wasDropping = true;
+    this.landEase = 0;
+  }
+
+  /** Heading toward the hottest fight, else the other players, else the island. */
+  private dropFacing(me: PlayerState): number {
+    const z = this.sky.zones[0];
+    if (z) return Math.atan2(z.x - me.x, z.z - me.z);
+    let sx = 0, sz = 0, n = 0;
+    for (const o of this.source.snapshot().players) {
+      if (o.id === me.id || !o.alive || o.move === Move.Glide) continue;
+      sx += o.x; sz += o.z; n++;
+    }
+    if (n) return Math.atan2(sx / n - me.x, sz / n - me.z);
+    return me.yaw;
   }
 
   start(): void {
     if (this.running) return;
     this.running = true;
     const mins = Math.round(this.source.snapshot().timeLeft / 60);
-    if (this.opts.intro) {
+    // a sky drop is its own intro: no swoop down to the shoulder
+    if (this.opts.intro && this.source.me()?.move !== Move.Glide) {
       // swoop down from over the island, then the title card as we land
       this.rig.intro(3.2);
       this.startTimer = setTimeout(() => this.hud.bigText(this.opts.world.name, `most splats in ${mins} minutes wins · paint wears off · water washes it faster`), 2300);
@@ -251,6 +275,12 @@ export class Game {
     this.events.length = 0;
     this.source.drainEvents(this.events);
     for (const e of this.events) this.handle(e);
+    const simTime = this.source.snapshot().time;
+    for (const e of this.events) {
+      if (e.type === "hit" && e.pred !== 2) this.sky.note("hit", simTime, e.x, e.z, e.color);
+      else if (e.type === "elim") this.sky.note("elim", simTime, e.x, e.z, e.killer >= 0 ? this.name(e.killer).color : 0);
+      else if (e.type === "splat") this.sky.note("splat", simTime, e.x, e.z, e.color);
+    }
     for (const [k, v] of this.noise) this.noise.set(k, v + dt);
 
     const alpha = Math.min(1, this.acc / this.source.tickDt);
@@ -262,12 +292,31 @@ export class Game {
     this.actors.localPitch = this.cmd.pitch;
     this.actors.hideLocal = this.rig.distance < 0.9 && !!me?.alive;
     this.actors.update(dt, alpha, this.rig.camera);
+    this.sky.update(dt, this.source.snapshot().time, me, this.snapColor(), this.rig.camera, this.source.snapshot().players, (id, out) => this.actors.playerPos(id, out));
+    // sky drop → on your feet: bring the view back up from looking at the ground
+    const dropping = !!me && me.alive && (me.move === Move.Glide || me.move === Move.Splat);
+    if (this.wasDropping && !dropping) { this.landEase = 0.9; this.placeT = Math.max(this.placeT, 1.6); }
+    this.wasDropping = dropping;
+    if (this.landEase > 0) {
+      this.landEase -= dt;
+      if (this.input.pitch < -0.12) this.input.pitch += (-0.1 - this.input.pitch) * (1 - Math.exp(-dt * 5));
+    }
 
     // ---- camera -------------------------------------------------------------------------
     const snap = this.source.snapshot();
     const c = this.camCtx;
     if (this.input.lookDX !== 0 || this.input.lookDY !== 0) { this.lookIdle = 0; this.input.lookDX = 0; this.input.lookDY = 0; }
     else this.lookIdle += dt;
+    // gyro pilots turning on A/D: the view turns with the craft (it flies toward the view otherwise)
+    const piloting = me && me.alive && me.move === Move.Vehicle && me.seat === 0 ? snap.vehicles.find((v) => v.id === me.vehicle) : undefined;
+    if (piloting && piloting.kind === VehicleKind.Gyrocopter) {
+      if (this.gyroYaw !== null && this.cmd.moveX !== 0) {
+        let d = piloting.yaw - this.gyroYaw;
+        d -= Math.PI * 2 * Math.floor((d + Math.PI) / (Math.PI * 2));
+        this.input.yaw += d;
+      }
+      this.gyroYaw = piloting.yaw;
+    } else this.gyroYaw = null;
     if (me && me.alive && me.move === Move.Vehicle && me.seat === 0 && this.lookIdle > 0.9) {
       // drivers: ease the camera back behind the vehicle when the mouse rests
       const v = snap.vehicles.find((v) => v.id === me.vehicle);
@@ -276,7 +325,8 @@ export class Game {
         d -= Math.PI * 2 * Math.floor((d + Math.PI) / (Math.PI * 2));
         const k = (1 - Math.exp(-dt * 1.6)) * Math.min(1, Math.abs(v.speed) / 4);
         this.input.yaw += d * k;
-        this.input.pitch += (-0.16 - this.input.pitch) * k;
+        // (the gyro climbs / dives on the view pitch: leave it where the pilot put it)
+        if (v.kind !== VehicleKind.Gyrocopter) this.input.pitch += (-0.16 - this.input.pitch) * k;
       }
     }
     if (me) {
@@ -324,7 +374,7 @@ export class Game {
     this.audio.update(dt, cam, this.rig.forward, snap, me, this.view.caveFactor, this.view.underwater);
 
     // ---- HUD ---------------------------------------------------------------------------
-    const it = me?.alive ? this.source.interactTarget() : null;
+    const it = me?.alive && !dropping ? this.source.interactTarget() : null;
     this.hud.update(dt, {
       me, snap, camYaw: this.input.yaw,
       interact: it ? it.label : null,
@@ -335,10 +385,12 @@ export class Game {
       scoped: c.scope && this.rig.aimAmount > 0.8,
       onTarget: this.aimOnPlayer,
       fps: this.settings.showFps ? `${this.stats.fps} fps  ${this.stats.drawCalls} draws  sim ${this.simAvg.toFixed(2)} ms` : null,
+      drop: dropping && me ? this.dropHud(me) : null,
+      zones: this.sky.zones,
     });
-    if (me && !me.alive && this.deathT > ELIM_ANIM && !this.spawnMapShown) {
-      this.spawnMapShown = true;
-      this.hud.openSpawnMap();
+    if (me && !me.alive && this.deathT > ELIM_ANIM && !this.dropMapShown) {
+      this.dropMapShown = true;
+      this.hud.openDropMap();
     }
     // back on your feet: the death card and spawn map go, whatever order the events came in
     if (me && !me.alive && this.deathUi) this.deathUi = 2;
@@ -392,7 +444,7 @@ export class Game {
     }
     // ---- entering a named place: a quiet title card
     this.placeT -= dt;
-    if (me?.alive && this.placeT <= 0 && !this.rig.introActive) {
+    if (me?.alive && this.placeT <= 0 && !this.rig.introActive && !dropping) {
       this.placeT = 0.5;
       const place = this.hud.placeAt(me.x, me.z, 55);
       if (place && place !== this.lastPlace) { this.lastPlace = place; this.hud.areaTitle(place); this.placeT = 8; }
@@ -464,10 +516,10 @@ export class Game {
       sfx("uiClick", null, { self: true, volume: 0.6 });
     }
     this.prevButtons = s.buttons;
-    if (this.spawnPickTicks > 0) { cmd.buttons |= this.spawnPickBits; this.spawnPickTicks--; }
     const camYaw = this.input.yaw, camPitch = this.input.pitch;
     let yaw = camYaw, pitch = camPitch;
-    if (me && me.alive) {
+    // (gliding / driving: no marker, so no aim ray — the view itself steers, e.g. the gyrocopter)
+    if (me && me.alive && me.move !== Move.Glide && me.move !== Move.Splat && !(me.move === Move.Vehicle && me.seat === 0)) {
       // aim: the eye ray must pass through what the crosshair covers
       const cam = this.rig.camera;
       const cp = Math.cos(camPitch);
@@ -618,7 +670,7 @@ export class Game {
           const kp = this.source.snapshot().players.find((p) => p.id === e.killer);
           if (kp && e.killer !== local) this.input.yaw = Math.atan2(kp.x - this.deathPos.x, kp.z - this.deathPos.z);
           this.deathT = 0;
-          this.spawnMapShown = false;
+          this.dropMapShown = false;
           this.deathUi = 1;
           this.deathUiT = 0;
           this.hud.showDeath(DEATH_TITLES[(Math.random() * DEATH_TITLES.length) | 0], killer && e.killer !== local ? killer.name : null, color);
@@ -633,8 +685,13 @@ export class Game {
           this.hud.hideDeath();
           this.rig.snap();
           const me = this.source.me();
-          if (me) { this.input.yaw = this.landward(me.x, me.z, me.yaw); this.input.pitch = -0.1; }
-          sfx("respawn");
+          if (me && me.move === Move.Glide) {
+            this.startDrop(me);
+            sfx("skyDrop");
+          } else {
+            if (me) { this.input.yaw = this.landward(me.x, me.z, me.yaw); this.input.pitch = -0.1; }
+            sfx("respawn");
+          }
         }
         break;
       case "pickup": {
@@ -657,7 +714,15 @@ export class Game {
         const v = this.source.snapshot().vehicles.find((v) => v.id === e.vehicle);
         if (e.pid === local) {
           sfx(v?.kind === VehicleKind.Vespa && e.seat === 0 ? "vespaStart" : "vehicleEnter");
-          if (v && e.seat === 0) this.hud.toast(v.kind === VehicleKind.Vespa ? "Andiamo!" : v.kind === VehicleKind.Gondola ? "O sole mio…" : "Row, row!", v.kind === VehicleKind.Vespa ? "W/S throttle · A/D steer · E hop off" : "W/S row · A/D turn · E hop off");
+          if (v && e.seat === 0) {
+            const [title, help] = v.kind === VehicleKind.Vespa ? ["Andiamo!", "W/S throttle · A/D steer · E hop off"]
+              : v.kind === VehicleKind.Jetski ? ["Vroom!", "W/S throttle · A/D carve · Space hop · E hop off"]
+              : v.kind === VehicleKind.Speedboat ? ["Dolce vita!", "W/S throttle · A/D steer · E hop off"]
+              : ["Buon volo!", "W/S throttle · mouse / A/D steer · mouse or Space/Ctrl climb · E bail out"];
+            this.hud.toast(title, help);
+            // the gyro flies where you look: start level, facing down the take-off run
+            if (v.kind === VehicleKind.Gyrocopter) { this.input.yaw = v.yaw; this.input.pitch = -0.14; }
+          }
           else if (v) this.hud.toast("Passenger", "You can shoot from here!");
         }
         break;
@@ -668,7 +733,7 @@ export class Game {
       case "vehicleBump": {
         const v = this.source.snapshot().vehicles.find((v) => v.id === e.vehicle);
         if (v) {
-          if (v.kind === VehicleKind.Vespa) fx.dust({ x: v.x, y: v.y + 0.2, z: v.z }, 5);
+          if (v.kind === VehicleKind.Vespa || v.kind === VehicleKind.Gyrocopter) fx.dust({ x: v.x, y: v.y + 0.2, z: v.z }, v.kind === VehicleKind.Gyrocopter ? 9 : 5);
           else fx.spray({ x: v.x, y: v.y + 0.2, z: v.z }, { x: 0, y: 2, z: 0 }, 6);
           const me = this.source.me();
           if (me && me.vehicle === v.id) this.rig.shake(Math.min(0.5, e.speed * 0.05));
@@ -710,7 +775,6 @@ export class Game {
       case "reload": if (e.pid === local) sfx("reload"); break;
       case "reloaded": if (e.pid === local) sfx("reloaded"); break;
       case "empty": if (e.pid === local) { sfx("empty"); this.hud.toast("Out of paint!", "Find an ammo crate", "#ffc9a8"); } break;
-      case "spawnChoices": break;
       case "matchEnd": break;
       default: break;
     }
@@ -736,10 +800,52 @@ export class Game {
       if (belly) { fx.splashWater({ x: e.x + 0.6, y, z: e.z + 0.3 }, 1.6); if (local) { this.rig.shake(0.35); this.hud.bigText("Splash!", "belly-flop"); } }
       sfx(belly ? "bellyflop" : "splash", e);
     }
+    if (b & Fx.SkyLand) {
+      // SPLORT: a sky diver pancakes onto the ground (or belly-flops into the water, above)
+      if (!(b & Fx.WaterEnter)) {
+        const g = raycast(this.source.env.cw, e.x, e.y + 1, e.z, 0, -1, 0, 3);
+        const y = (g?.y ?? e.y) + 0.06;
+        fx.ring({ x: e.x, y, z: e.z }, 0xf3e0bb, 3.2, 0.55);
+        fx.dust({ x: e.x, y: y + 0.1, z: e.z }, 14);
+        fx.dust({ x: e.x, y: y + 0.1, z: e.z }, 6, p ? this.name(p.id).color : undefined);
+        sfx("skySplat", e);
+      }
+      if (local) {
+        this.rig.shake(0.4);
+        this.rig.dip(22);
+        if (!(b & Fx.WaterEnter)) this.hud.bigText("Splat!", LANDING_QUIPS[(Math.random() * LANDING_QUIPS.length) | 0]);
+      }
+    }
     if (b & Fx.Submerge) sfx("submerge", e);
     if (b & Fx.Gasp) { sfx("gasp", e); if (local) this.hud.toast("*gasp*", "Out of breath — can't dive for a moment", "#c4e9e2"); }
     else if (b & Fx.Surface) sfx("surface", e);
 
+  }
+
+  private snapColor(): number {
+    return this.source.snapshot().info.get(this.source.localId)?.color ?? 0xffffff;
+  }
+
+  private dropMarks: NonNullable<HudFrame["drop"]>["marks"] = [];
+  /** Sky-drop HUD: altitude, predicted landing, every enemy marked on screen. */
+  private dropHud(me: PlayerState): NonNullable<HudFrame["drop"]> {
+    const snap = this.source.snapshot();
+    const marks = this.dropMarks;
+    marks.length = 0;
+    const cam = this.rig.camera;
+    for (const o of snap.players) {
+      if (o.id === me.id || !o.alive) continue;
+      if (!this.actors.playerPos(o.id, _v2)) _v2.set(o.x, o.y, o.z);
+      const dist = Math.hypot(_v2.x - me.x, _v2.y - me.y, _v2.z - me.z);
+      if (dist < 45) continue; // close ones wear their own name tags
+      _v2.y += 2.2;
+      const ndc = _v2.project(cam);
+      const i = snap.info.get(o.id);
+      marks.push({ id: o.id, name: i?.name ?? "?", color: i?.color ?? 0xffffff, ndc: { x: ndc.x, y: ndc.y, z: ndc.z }, dist });
+    }
+    marks.sort((a, b) => a.dist - b.dist);
+    const g = Math.max(0, terrainHeight(this.opts.world, me.x, me.z));
+    return { alt: me.y - g, landing: this.sky.landingValid ? { x: this.sky.landing.x, z: this.sky.landing.z } : null, marks };
   }
 
   // ------------------------------------------------------------------ debug API
@@ -792,7 +898,11 @@ export class Game {
       inputSeq: async (steps: [InputOverride, number][]) => { await this.input.setOverrideSeq(steps); return (this.debugApi().state as () => unknown)(); },
       wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
       paint: (n = 1, from = -1) => { const p = me(); if (!p || !sim) return 0; const s = from >= 0 ? from : sim.players.find((q) => q.id !== p.id)?.id ?? p.id; p.shield = 0; for (let i = 0; i < n; i++) sim.paint(p.id, s); return p.coats.length; },
-      pickSpawn: (i: number) => { this.pickSpawn(i); return true; },
+      /** Drop me back in from the sky (offline). */
+      skyDrop: () => { const p = me(); if (!p || !sim) return false; const q = sim.player(p.id); if (q) sim.skyDrop(q); return true; },
+      /** Hot zones as the client sees them. */
+      zones: () => this.sky.zones.map((z) => ({ x: +z.x.toFixed(1), z: +z.z.toFixed(1), heat: +z.heat.toFixed(2), color: z.color })),
+      landing: () => (this.sky.landingValid ? { x: +this.sky.landing.x.toFixed(1), y: +this.sky.landing.y.toFixed(1), z: +this.sky.landing.z.toFixed(1) } : null),
       dummies: (active: boolean, shoot = active) => { src.dummiesActive = active; src.dummiesShoot = shoot; return true; },
       dummy: (i = 0) => sim?.players.filter((p) => p.id !== this.source.localId)[i] ?? null,
       /** Put dummy i at a spot relative to me (meters ahead / right). */
@@ -830,6 +940,7 @@ export class Game {
     this.input.dispose();
     this.hud.dispose();
     this.arc.dispose();
+    this.sky.dispose();
     this.actors.dispose();
     this.source.dispose();
   }

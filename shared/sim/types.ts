@@ -12,9 +12,6 @@ export const Btn = {
   Sprint: 16,
   Reload: 32,
   Interact: 64,
-  /** While eliminated: pick spawn choice 0 / 1. */
-  SpawnA: 128,
-  SpawnB: 256,
 } as const;
 
 /** One fixed-rate (TICK_HZ) input sample. yaw/pitch are the AIM direction from the eye. */
@@ -48,6 +45,10 @@ export const Move = {
   Dead: 9,
   /** Sliding down a slope too steep to stand on. */
   SteepSlide: 10,
+  /** Sky drop: spread out like a flying squirrel, gliding down onto the island (after every respawn). */
+  Glide: 11,
+  /** Sky drop landing: pancaked on the ground for SPLAT_TIME, then back up. */
+  Splat: 12,
 } as const;
 export type MoveState = (typeof Move)[keyof typeof Move];
 
@@ -66,6 +67,8 @@ export const Fx = {
   Gasp: 1024,
   SlideJump: 2048,
   ZipEnd: 4096,
+  /** A sky drop touched down (splat on land, or the steep-slope / water variants). */
+  SkyLand: 8192,
 } as const;
 
 /** Per-player state. The movement part is what stepPlayer reads and writes. */
@@ -127,8 +130,6 @@ export interface PlayerState {
   shotSeq: number;
   shield: number;
   deadT: number;
-  spawnChoices: number[];
-  spawnPick: number;
   lastHitBy: number;
   lastKiller: number;
   score: number;
@@ -204,7 +205,6 @@ export type SimEvent =
   | { type: "projEnd"; proj: number }
   | { type: "elim"; victim: number; killer: number; x: number; y: number; z: number; tags: number; place: string; dist: number }
   | { type: "respawn"; pid: number; x: number; y: number; z: number }
-  | { type: "spawnChoices"; pid: number }
   | { type: "pickup"; pid: number; pickup: number; kind: number; drop: number; x: number; y: number; z: number }
   | { type: "pickupSpawn"; pickup: number }
   | { type: "vehicleEnter"; pid: number; vehicle: number; seat: number }

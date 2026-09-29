@@ -4,6 +4,7 @@
 // the Room DO, predict the local player with stepPlayer and interpolate others.
 import type { World } from "../../../shared/world/types";
 import { Dummy } from "../../../shared/sim/dummy";
+import { BotBrain, prepareBotWorld } from "../../../shared/bots/brain/index";
 import {
   MatchSim, createEnv, TICK_DT,
   type InputCmd, type InteractTarget, type SimEnv, type SimEvent, type SimSnapshot, type PlayerState,
@@ -40,6 +41,8 @@ export interface LocalSourceOptions {
   name?: string;
   color?: number;
   dummies?: number;
+  /** Real bot brains (the same AI as online rooms). */
+  bots?: number;
   durationSec?: number;
 }
 
@@ -50,7 +53,8 @@ export class LocalSource implements GameSource {
   readonly sim: MatchSim;
   readonly localId: number;
   readonly tickDt = TICK_DT;
-  readonly dummies: Dummy[] = [];
+  /** Everything that drives a bot seat: simple dummies and real bot brains. */
+  readonly dummies: { id: number; think(sim: MatchSim, dt: number): InputCmd }[] = [];
   dummiesActive = true;
   dummiesShoot = true;
   private pending: InputCmd | null = null;
@@ -62,6 +66,20 @@ export class LocalSource implements GameSource {
     this.sim.addPlayer(this.localId, { name: opts.name ?? "You", color: opts.color ?? BLOB_COLORS[0], isBot: false });
     const n = opts.dummies ?? 0;
     for (let i = 0; i < n; i++) this.addDummy();
+    const nb = opts.bots ?? 0;
+    if (nb > 0) prepareBotWorld(world, this.env.cw);
+    for (let i = 0; i < nb; i++) this.addBot(i % 3);
+  }
+
+  /** A seat driven by the real bot AI; difficulty 0 easy .. 2 hard. */
+  addBot(difficulty: number): number {
+    const id = 100 + this.dummies.length;
+    const i = this.dummies.length;
+    const name = dummyName(i);
+    this.sim.addPlayer(id, { name, color: BLOB_COLORS[(i + 1) % BLOB_COLORS.length], isBot: true });
+    const brain = new BotBrain({ id, seed: this.world.seed, difficulty, name });
+    this.dummies.push({ id, think: (sim, dt) => brain.think(sim, id, dt) });
+    return id;
   }
 
   addDummy(): number {

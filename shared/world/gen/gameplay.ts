@@ -1,6 +1,6 @@
-// Stage 10: gameplay placement — spawns, ammo caches, upgrades, boats,
-// Vespas, ziplines — with a reachability check over the walkable (and
-// swimmable) surface plus cave tunnels.
+// Stage 10: gameplay placement — spawns, ammo caches, upgrades, speedboats,
+// jetskis, Vespas, gyrocopters, ziplines — with a reachability check over the
+// walkable (and swimmable) surface plus cave tunnels.
 import type { Rng } from "../../math/rng";
 import { atan2, cos, sin } from "../../math/trig";
 import { buildCollision, caveSdf, groundBelow, sdf, type CollisionWorld } from "../collide";
@@ -227,14 +227,15 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
       const ax = end.x - boathouse.x, az = end.z - boathouse.z;
       const L = Math.sqrt(ax * ax + az * az) || 1;
       const px = -az / L, pz = ax / L;
-      const b1 = waterSpot(ctx, cw, end.x + px * 2.8, end.z + pz * 2.8);
-      if (b1) ctx.vehicles.push({ kind: VehicleKind.Rowboat, x: b1.x, y: 0, z: b1.z, rotY: atan2(ax, az) });
-      const b2 = waterSpot(ctx, cw, end.x - px * 3.0 - (ax / L) * 3, end.z - pz * 3.0 - (az / L) * 3);
-      if (b2) ctx.vehicles.push({ kind: VehicleKind.Gondola, x: b2.x, y: 0, z: b2.z, rotY: atan2(ax, az) });
+      // a runabout moored alongside, a jetski tied up on the other side
+      const b1 = waterSpot(ctx, cw, end.x - px * 3.4 - (ax / L) * 3, end.z - pz * 3.4 - (az / L) * 3, SPEEDBOAT_CLEAR);
+      if (b1) ctx.vehicles.push({ kind: VehicleKind.Speedboat, x: b1.x, y: 0, z: b1.z, rotY: atan2(ax, az) });
+      const b2 = waterSpot(ctx, cw, end.x + px * 2.6, end.z + pz * 2.6);
+      if (b2) ctx.vehicles.push({ kind: VehicleKind.Jetski, x: b2.x, y: 0, z: b2.z, rotY: atan2(ax, az) });
     }
   }
   boatRoute(ctx, cw, vrng);
-  // gondolas (and the odd rowboat) moored at the cove jetties
+  // speedboats (and the odd jetski) moored at the cove jetties
   for (const j of ctx.sites) {
     if (j.kind !== "jetty") continue;
     const end = j.spots.find((s) => s.tag === "dockEnd");
@@ -243,8 +244,11 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     const L = Math.sqrt(ax * ax + az * az) || 1;
     const px = -az / L, pz = ax / L;
     const side = vrng.chance(0.5) ? 1 : -1;
-    const b1 = waterSpot(ctx, cw, end.x + px * 2.4 * side, end.z + pz * 2.4 * side);
-    if (b1) ctx.vehicles.push({ kind: vrng.chance(0.75) ? VehicleKind.Gondola : VehicleKind.Rowboat, x: b1.x, y: 0, z: b1.z, rotY: atan2(ax, az) + vrng.range(-0.25, 0.25) });
+    const speedboat = vrng.chance(0.75);
+    const b1 = speedboat
+      ? waterSpot(ctx, cw, end.x + px * 3.0 * side, end.z + pz * 3.0 * side, SPEEDBOAT_CLEAR)
+      : waterSpot(ctx, cw, end.x + px * 2.4 * side, end.z + pz * 2.4 * side);
+    if (b1) ctx.vehicles.push({ kind: speedboat ? VehicleKind.Speedboat : VehicleKind.Jetski, x: b1.x, y: 0, z: b1.z, rotY: atan2(ax, az) + vrng.range(-0.25, 0.25) });
   }
   // Vespas: at the shed, then on paths far apart
   const shed = ctx.sites.find((s) => s.kind === "shed");
@@ -273,6 +277,9 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     vespas.push({ x, z });
     ctx.vehicles.push({ kind: VehicleKind.Vespa, x, y: sample(h, x, z), z, rotY: atan2(p.dx, p.dz) });
   }
+
+  // ---- gyrocopters: open, flat ground with a clear take-off run ---------------------------
+  gyrocopters(ctx, cw, rng.fork("gyros"), landOk);
 
   // ---- ziplines ------------------------------------------------------------------------
   ziplines(ctx, cw, rng.fork("ziplines"));
@@ -304,7 +311,7 @@ function landDistance(ctx: Ctx, start: number, out: Float32Array, queue: Int32Ar
   }
 }
 
-/** Rowboats on two beaches where crossing the water beats walking around. */
+/** Jetskis on two beaches where crossing the water beats walking around. */
 function boatRoute(ctx: Ctx, cw: CollisionWorld, rng: Rng): void {
   const h = ctx.height;
   const beaches: { i: number; x: number; z: number; sx: number; sz: number }[] = [];
@@ -371,7 +378,83 @@ function boatRoute(ctx: Ctx, cw: CollisionWorld, rng: Rng): void {
       z = p.z + p.sz * s;
     }
     const w = waterSpot(ctx, cw, x, z);
-    if (w) ctx.vehicles.push({ kind: VehicleKind.Rowboat, x: w.x, y: 0, z: w.z, rotY: atan2(o.x - p.x, o.z - p.z) });
+    if (w) ctx.vehicles.push({ kind: VehicleKind.Jetski, x: w.x, y: 0, z: w.z, rotY: atan2(o.x - p.x, o.z - p.z) });
+  }
+}
+
+/** Gyrocopters per island, and how far apart. */
+const GYRO_COUNT = 2;
+const GYRO_SPACING = 170;
+/** Take-off run that must be flat and clear ahead of a parked gyro (m). */
+const GYRO_RUN = 26;
+
+/**
+ * Gyrocopters on open, flat ground (meadows, hilltops, village greens) with a
+ * clear, level take-off run ahead of them. Candidates are ranked by flatness,
+ * height and biome, then the runway is checked against the collision SDF
+ * (trunks, rocks, walls) in 8 headings; the best heading wins.
+ */
+function gyrocopters(ctx: Ctx, cw: CollisionWorld, rng: Rng, landOk: (i: number) => boolean): void {
+  const placed: P2[] = [];
+  // strict first (meadow-ish, long flat run), then anything open enough
+  gyroPass(ctx, cw, rng, landOk, placed, 0.22, GYRO_RUN, false);
+  if (placed.length < GYRO_COUNT) gyroPass(ctx, cw, rng, landOk, placed, 0.32, 18, true);
+}
+
+function gyroPass(ctx: Ctx, cw: CollisionWorld, rng: Rng, landOk: (i: number) => boolean, placed: P2[], maxSlope: number, run: number, anyBiome: boolean): void {
+  const h = ctx.height;
+  const cand: { x: number; z: number; s: number; k: number }[] = [];
+  for (let iz = 6; iz < N - 6; iz += 3)
+    for (let ix = 6; ix < N - 6; ix += 3) {
+      const i = iz * N + ix;
+      if (!landOk(i) || h[i] < 2) continue;
+      const b = ctx.biome[i];
+      const bonus = b === Biome.Meadow ? 1 : b === Biome.Village ? 0.8 : b === Biome.Scrub || b === Biome.PalmGrove ? 0.4 : b === Biome.Beach ? 0.2 : -1;
+      if (bonus < 0 && !anyBiome) continue;
+      // flat neighbourhood (±6 m)
+      let sl = 0;
+      for (let dz = -3; dz <= 3; dz += 3)
+        for (let dx = -3; dx <= 3; dx += 3) {
+          const s = ctx.slope[(iz + dz) * N + ix + dx];
+          if (s > sl) sl = s;
+        }
+      if (sl > maxSlope) continue;
+      cand.push({ x: gx(ix), z: gx(iz), s: bonus + (maxSlope - sl) * 4 + Math.min(h[i], 60) * 0.015 + rng.next() * 0.35, k: cand.length });
+    }
+  cand.sort((a, b) => b.s - a.s || a.k - b.k);
+  const clearAt = (x: number, z: number): number => {
+    const i = toI(z) * N + toI(x);
+    if (ctx.water[i] !== NO_WATER || ctx.holes[i] || h[i] < 0.8) return NaN;
+    const y = sample(h, x, z);
+    if (sdf(cw, x, y + 0.8, z) < 0.6 || sdf(cw, x, y + 2, z) < 1.4) return NaN;
+    return y;
+  };
+  let tried = 0;
+  for (const c of cand) {
+    if (placed.length >= GYRO_COUNT || tried > 600) break;
+    if (placed.some((p) => (p.x - c.x) * (p.x - c.x) + (p.z - c.z) * (p.z - c.z) < GYRO_SPACING * GYRO_SPACING)) continue;
+    tried++;
+    const y0 = clearAt(c.x, c.z);
+    if (y0 !== y0 || sdf(cw, c.x, y0 + 2.4, c.z) < 2.3) continue;
+    // best heading: the run stays level and clear the longest
+    let bestA = -1, bestL = 0;
+    const a0 = rng.int(8);
+    for (let q = 0; q < 8; q++) {
+      const a = ((a0 + q) % 8) * 0.7853981633974483;
+      const dx = sin(a), dz = cos(a);
+      let prev = y0, L = 0;
+      for (let t = 2; t <= run; t += 2) {
+        const y = clearAt(c.x + dx * t, c.z + dz * t);
+        if (y !== y || Math.abs(y - prev) > 0.5 || Math.abs(y - y0) > 3) break;
+        prev = y;
+        L = t;
+      }
+      if (L > bestL) { bestL = L; bestA = a; }
+      if (L >= run) break;
+    }
+    if (bestL < run) continue;
+    placed.push({ x: c.x, z: c.z });
+    ctx.vehicles.push({ kind: VehicleKind.Gyrocopter, x: c.x, y: y0, z: c.z, rotY: bestA });
   }
 }
 
@@ -501,14 +584,26 @@ function ziplines(ctx: Ctx, cw: CollisionWorld, rng: Rng): void {
 
 
 /** Nearest open sea spot (>= 0.9 m deep, clear of docks) around (x, z). */
-function waterSpot(ctx: Ctx, cw: CollisionWorld, x: number, z: number): P2 | null {
+/** Clearance a moored speedboat needs around its middle (it's ~6 m long). */
+const SPEEDBOAT_CLEAR = 2.2;
+
+function waterSpot(ctx: Ctx, cw: CollisionWorld, x: number, z: number, clear = 1.1): P2 | null {
   for (let r = 0; r <= 40; r += 1.5) {
     const cnt = r === 0 ? 1 : Math.max(8, Math.round(r * 2));
     for (let k = 0; k < cnt; k++) {
       const a = (k / cnt) * 6.283185307179586;
       const px = x + sin(a) * r, pz = z + cos(a) * r;
       if (sample(ctx.height, px, pz) > -0.7) continue;
-      if (sdf(cw, px, 0.5, pz) < 1.1) continue;
+      if (sdf(cw, px, 0.5, pz) < clear) continue;
+      // big hulls: deep enough under the bow and stern whichever way they swing
+      if (clear > 1.1) {
+        let ok = true;
+        for (let q = 0; q < 4 && ok; q++) {
+          const qx = px + (q === 0 ? 3 : q === 1 ? -3 : 0), qz = pz + (q === 2 ? 3 : q === 3 ? -3 : 0);
+          if (sample(ctx.height, qx, qz) > -0.7 || sdf(cw, qx, 0.5, qz) < 0.6) ok = false;
+        }
+        if (!ok) continue;
+      }
       return { x: px, z: pz };
     }
   }

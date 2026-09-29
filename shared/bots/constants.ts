@@ -41,7 +41,8 @@ export const EYE_H = S.EYE_H;
 export const ZIP_FEET = S.ZIP_FEET;
 export const ZIP_GRAB_R = S.ZIP_GRAB_R;
 export const ZIP_MAX_SPEED = S.ZIP_MAX_SPEED;
-export const BOAT_SPEED = S.ROWBOAT_SPEED;
+/** Average speed of a bot-driven boat crossing a bay (speedboat top speed, less spin-up and beaching). */
+export const BOAT_SPEED = S.SPEEDBOAT_SPEED * 0.6;
 export const INTERACT_R = S.INTERACT_R;
 export const BALL_SPEED = S.BALL_SPEED;
 export const BALL_GRAVITY = S.BALL_GRAVITY;

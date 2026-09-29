@@ -4,7 +4,8 @@ import { sdf } from "../shared/world/collide";
 import type { World } from "../shared/world/types";
 import {
   BODY_R, Btn, createEnv, createPlayerState, copyPlayerState, MatchSim, Move, STEP_H, stepPlayer, TICK_DT, waterAt,
-  NO_WATER_Y, probeGround, BLOCKED, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, WASH_TIME, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
+  NO_WATER_Y, probeGround, BLOCKED, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, WASH_TIME, DROP_MIN_Y, DROP_MAX_Y, DROP_SCATTER, DROP_LAND_SHIELD, RESPAWN_DELAY,
+  SPLAT_TIME, GLIDE_ACCEL, Fx, BOAT_DRAFT, GYRO_CEILING, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
 } from "../shared/sim/index";
 import { Dummy } from "../shared/sim/dummy";
 import { VehicleKind } from "../shared/world/types";
@@ -161,12 +162,13 @@ describe("MatchSim", () => {
     expect(elim).toBe(true);
     expect(a.score).toBe(1);
     expect(b.alive).toBe(false);
-    // b respawns after choosing
-    for (let i = 0; i < 60 * 7; i++) {
-      sim.applyInput(2, cmd({ seq: i, buttons: i > 100 ? Btn.SpawnB : 0 }));
+    // b drops back in from the sky
+    for (let i = 0; i < 60 * 4; i++) {
+      sim.applyInput(2, cmd({ seq: i }));
       sim.step();
     }
     expect(b.alive).toBe(true);
+    expect(b.move).toBe(Move.Glide);
     expect(b.coats.length).toBe(0);
   });
 
@@ -298,9 +300,14 @@ describe("traversal", () => {
           const w = waterAt(env, v.x, v.z);
           const g = terrainHeight(world, v.x, v.z);
           if (w !== NO_WATER_Y) expect(w - g).toBeLessThan(0.9);
+        } else if (v.kind === VehicleKind.Gyrocopter) {
+          expect(v.y).toBeGreaterThan(terrainHeight(world, v.x, v.z) - 0.5);
+          expect(v.y).toBeLessThanOrEqual(GYRO_CEILING);
         } else {
-          expect(waterAt(env, v.x, v.z)).not.toBe(NO_WATER_Y);
-          expect(terrainHeight(world, v.x, v.z)).toBeLessThan(v.y);
+          // boats: afloat, or beached at the water's edge (never motoring inland)
+          const g = terrainHeight(world, v.x, v.z);
+          expect(v.y - g).toBeGreaterThan(BOAT_DRAFT - 0.05);
+          if (waterAt(env, v.x, v.z) === NO_WATER_Y) expect(g).toBeLessThan(1.5);
         }
       }
       expect(p.move).toBe(Move.Vehicle);
@@ -400,5 +407,156 @@ describe("snapshots", () => {
     const p = createPlayerState(1);
     restorePlayer(p, json.players[0]);
     expect(p.lastSeq).toBe(29);
+  });
+});
+
+describe("sky drop", () => {
+  /** Glide p toward (tx, tz) like a player would (flare when it's far, dive / tuck when it's close) until it lands. */
+  function glideTo(sim: MatchSim, id: number, tx: number, tz: number, maxSec = 60): { t: number; fx: number } {
+    const p = sim.player(id)!;
+    let fx = 0, t = 0;
+    for (let i = 0; i < maxSec * 60 && p.move === Move.Glide; i++) {
+      const dx = tx - p.x, dz = tz - p.z, d = Math.hypot(dx, dz);
+      // height over the target, or over any rise on the way there
+      let g = terrainHeight(world, tx, tz);
+      for (const a of [30, 70]) if (a < d) g = Math.max(g, terrainHeight(world, p.x + (dx / d) * a, p.z + (dz / d) * a) + 4);
+      const h = Math.max(1, p.y - g);
+      const need = d / h;
+      const c = cmd({ seq: i, yaw: d > 1 ? Math.atan2(dx, dz) : p.yaw });
+      // about to overshoot: brake (tuck when there's height to lose, else flare)
+      const v = Math.hypot(p.vx, p.vz);
+      if (d < (v * v) / (2 * GLIDE_ACCEL) + 6) { c.moveZ = -1; if (d < 10 && h > 10) c.buttons = Btn.Sprint; }
+      else c.moveZ = need > 2.4 ? -1 : need < 1.5 ? 1 : 0;
+      sim.applyInput(id, c);
+      sim.step();
+      t += TICK_DT;
+      for (const e of sim.events) if (e.type === "move" && e.pid === id) fx |= e.fx;
+      sim.events.length = 0;
+    }
+    return { t, fx };
+  }
+
+  it("starts high over the island, gliding and shielded (match start and every respawn)", () => {
+    const sim = new MatchSim(world, { env });
+    const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+    let maxH = 0;
+    for (let i = 0; i < world.height.length; i++) maxH = Math.max(maxH, world.height[i]);
+    expect(p.alive).toBe(true);
+    expect(p.move).toBe(Move.Glide);
+    expect(p.y).toBeGreaterThanOrEqual(DROP_MIN_Y);
+    expect(p.y).toBeLessThanOrEqual(DROP_MAX_Y);
+    expect(p.y).toBeGreaterThan(maxH + 30);
+    expect(Math.hypot(p.x - sim.drop.cx, p.z - sim.drop.cz)).toBeLessThanOrEqual(DROP_SCATTER + 0.01);
+    expect(terrainHeight(world, sim.drop.cx, sim.drop.cz)).toBeGreaterThan(-5);
+    // nobody can paint a sky diver
+    sim.addPlayer(2, { name: "B", color: 0x00ff00, isBot: false });
+    sim.step();
+    expect(p.shield).toBeGreaterThan(0);
+    sim.paint(1, 2);
+    expect(p.coats.length).toBe(0);
+    expect(sim.events.some((e) => e.type === "shield" && e.target === 1)).toBe(true);
+    // eliminated players drop again after RESPAWN_DELAY
+    p.shield = 0;
+    for (let i = 0; i < 3; i++) sim.paint(1, 2);
+    expect(p.alive).toBe(false);
+    for (let i = 0; i < 60 * RESPAWN_DELAY + 2; i++) sim.step();
+    expect(p.alive).toBe(true);
+    expect(p.move).toBe(Move.Glide);
+    expect(p.y).toBeGreaterThan(DROP_MIN_Y - 3);
+  });
+
+  it("a neutral drop takes 8-14 s and lands with a splat: no damage, no stumble, shielded a moment after", () => {
+    const sim = new MatchSim(world, { env });
+    const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+    const s = flatSpot();
+    let t = 0, fx = 0, splatT = 0, landShield = 0;
+    // no input: glide straight along the view toward the flat spot
+    const yaw = Math.atan2(s.x - p.x, s.z - p.z);
+    for (let i = 0; i < 60 * 30 && p.move === Move.Glide; i++) {
+      sim.applyInput(1, cmd({ seq: i, yaw }));
+      sim.step();
+      t += TICK_DT;
+      expect(p.shield).toBeGreaterThan(0);
+      for (const e of sim.events) if (e.type === "move" && e.pid === 1) fx |= e.fx;
+      sim.events.length = 0;
+    }
+    expect(t).toBeGreaterThan(8);
+    expect(t).toBeLessThan(14);
+    expect(fx & Fx.SkyLand).toBeTruthy();
+    expect(fx & Fx.LandHard).toBeFalsy();
+    if (p.move === Move.Splat) {
+      // pancaked, then back up
+      landShield = p.shield;
+      for (let i = 0; i < 60 && p.move === Move.Splat; i++) { sim.applyInput(1, cmd({ seq: 5000 + i, yaw, moveZ: 1 })); sim.step(); splatT += TICK_DT; }
+      expect(splatT).toBeGreaterThan(SPLAT_TIME - 0.05);
+      expect(splatT).toBeLessThan(SPLAT_TIME + 0.1);
+      expect(p.move).toBe(Move.Ground);
+      expect(landShield).toBeGreaterThan(DROP_LAND_SHIELD - 0.05);
+    }
+    expect(p.stumble).toBeLessThanOrEqual(0);
+    expect(p.coats.length).toBe(0);
+    expect(p.alive).toBe(true);
+    expect(bodyClearance(p)).toBeGreaterThan(-0.12);
+    // the landing shield runs out
+    for (let i = 0; i < 60 * (DROP_LAND_SHIELD + 0.2); i++) { sim.applyInput(1, cmd({ seq: 6000 + i, yaw })); sim.step(); }
+    expect(p.shield).toBeLessThanOrEqual(0);
+  });
+
+  it("can reach any corner of the island, and land right where it aims", () => {
+    const sim = new MatchSim(world, { env });
+    // the spawn point farthest from the drop zone (spawns sit on dry land all over the island)
+    let far = world.spawns[0], fd = 0;
+    for (const s of world.spawns) {
+      const d = Math.hypot(s.x - sim.drop.cx, s.z - sim.drop.cz);
+      if (d > fd) { fd = d; far = s; }
+    }
+    expect(fd).toBeGreaterThan(350);
+    let worst = 0;
+    for (let k = 0; k < 4; k++) {
+      const p = sim.addPlayer(10 + k, { name: "G" + k, color: 0xff0000, isBot: false });
+      // start on the far side of the scatter circle: the worst case
+      const ang = Math.atan2(far.x - sim.drop.cx, far.z - sim.drop.cz) + Math.PI + (k - 1.5) * 0.4;
+      p.x = sim.drop.cx + Math.sin(ang) * DROP_SCATTER;
+      p.z = sim.drop.cz + Math.cos(ang) * DROP_SCATTER;
+      const { t } = glideTo(sim, p.id, far.x, far.z);
+      expect(p.move).not.toBe(Move.Glide);
+      worst = Math.max(worst, Math.hypot(p.x - far.x, p.z - far.z));
+      expect(t).toBeLessThan(45);
+      sim.removePlayer(p.id);
+    }
+    expect(worst).toBeLessThan(12);
+    // and a close target, straight down
+    const p = sim.addPlayer(20, { name: "H", color: 0xff0000, isBot: false });
+    const s = flatSpot();
+    glideTo(sim, 20, s.x, s.z);
+    expect(Math.hypot(p.x - s.x, p.z - s.z)).toBeLessThan(8);
+  });
+
+  it("splashes down into a swim over water", () => {
+    const sim = new MatchSim(world, { env });
+    const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+    // open sea out toward the edge
+    let tx = 0;
+    for (let r = 300; r < 500; r += 10) { tx = r; if (probeGround(env, sim.drop.cx + r, 0, sim.drop.cz, 60) < -3) break; }
+    const { fx } = glideTo(sim, 1, sim.drop.cx + tx, sim.drop.cz);
+    expect(p.move).toBe(Move.Swim);
+    expect(fx & Fx.WaterEnter).toBeTruthy();
+    expect(p.alive).toBe(true);
+  });
+
+  it("slides off roofs it can't stand on, and never ends up inside anything", () => {
+    const sim = new MatchSim(world, { env });
+    let worst = Infinity, stuck = 0;
+    for (let k = 0; k < Math.min(10, world.structures.length); k++) {
+      const st = world.structures[(k * 7) % world.structures.length];
+      const p = sim.addPlayer(30 + k, { name: "R" + k, color: 0xff0000, isBot: false });
+      glideTo(sim, p.id, st.x + 0.7, st.z - 0.4);
+      // whatever we landed on: a few seconds later we're free (not wedged, not sliding forever)
+      for (let i = 0; i < 60 * 3; i++) { sim.applyInput(p.id, cmd({ seq: 9000 + i })); sim.step(); if (i % 10 === 0) worst = Math.min(worst, bodyClearance(p)); }
+      if (p.move === Move.Glide || p.move === Move.Splat) stuck++;
+      sim.removePlayer(p.id);
+    }
+    expect(stuck).toBe(0);
+    expect(worst).toBeGreaterThan(-0.15);
   });
 });

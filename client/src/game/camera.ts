@@ -13,7 +13,7 @@ export interface CamContext {
   scope: boolean;
   sprinting: boolean;
   speed: number;
-  /** Vehicle kind when seated (0 rowboat, 1 gondola, 2 vespa) or -1. */
+  /** Vehicle kind when seated (0 jetski, 1 speedboat, 2 vespa, 3 gyrocopter) or -1. */
   vehicle: number;
   driver: boolean;
   steer: number;
@@ -43,6 +43,8 @@ export class CameraRig {
   private kickP = 0;
   private roll = 0;
   private aimK = 0;
+  /** Sky drop framing (0..1): high and far behind, looking down at the island. */
+  private dropK = 0;
   private deathYaw = 0;
   /** Distance from the camera to the pivot after collision (hide the local blob when tiny). */
   distance = 3.4;
@@ -98,16 +100,31 @@ export class CameraRig {
       case Move.Underwater: pivotH = 0.7; back = 3.2; break;
       case Move.Zipline: pivotH = 1.7; back = 4.4; shoulder = 0.4; break;
       case Move.Vehicle: {
-        const boat = c.vehicle === 0 || c.vehicle === 1;
-        pivotH = boat ? 1.35 : 1.3;
-        back = c.vehicle === 1 ? 7.5 : boat ? 5.8 : 5.2;
+        // 0 jetski, 1 speedboat, 2 vespa, 3 gyrocopter (VehicleKind)
+        pivotH = c.vehicle === 3 ? 1.9 : c.vehicle === 1 ? 1.45 : c.vehicle === 0 ? 1.35 : 1.3;
+        back = c.vehicle === 3 ? 9 : c.vehicle === 1 ? 7.5 : c.vehicle === 0 ? 5.4 : 5.2;
         shoulder = c.driver ? 0 : 0.5;
-        up = c.driver ? 0.9 : 0.4;
+        up = c.vehicle === 3 ? 1.3 : c.driver ? 0.9 : 0.4;
         if (c.vehicle === 2) fovAdd += Math.min(12, c.speed * 0.75);
+        else if (c.vehicle === 0) fovAdd += Math.min(14, c.speed * 0.6);
+        else if (c.vehicle === 1) fovAdd += Math.min(10, c.speed * 0.45);
+        else if (c.vehicle === 3) fovAdd += Math.min(10, c.speed * 0.4);
         break;
       }
     }
     if (c.sprinting) { back += 0.45; fovAdd += 7; }
+    // sky drop: pull way back and up so the island (and your landing spot) fills the view;
+    // eases in and back out so the landing flows into the normal shoulder cam
+    const dropping = c.move === Move.Glide || c.move === Move.Splat;
+    this.dropK += ((dropping ? 1 : 0) - this.dropK) * damp(dropping ? 3 : 1.8, dt);
+    if (this.dropK > 0.001) {
+      const dk = this.dropK * this.dropK * (3 - 2 * this.dropK);
+      pivotH += (0.9 - pivotH) * dk;
+      back += (8.5 - back) * dk;
+      up += (1.9 - up) * dk;
+      shoulder *= 1 - dk;
+      if (c.move === Move.Glide) fovAdd += dk * Math.min(14, 4 + c.speed * 0.25);
+    }
     back = back * (1 - ak) + (c.scope ? 2.0 : 2.7) * ak;
     shoulder = shoulder * (1 - ak) + 1.02 * ak;
     up = up * (1 - ak) + 0.42 * ak;
@@ -179,7 +196,8 @@ export class CameraRig {
     cx += r.x * n1 * s * 0.18; cz += r.z * n1 * s * 0.18; cy += n2 * s * 0.14;
 
     // roll into vespa turns / slides
-    const rollT = c.move === Move.Vehicle && c.vehicle === 2 ? -c.steer * Math.min(1, c.speed / 10) * 0.07 : c.move === Move.Slide ? 0.02 * this.side : 0;
+    const vehRoll = c.vehicle === 2 ? 0.07 : c.vehicle === 0 ? 0.06 : c.vehicle === 3 ? 0.1 : 0;
+    const rollT = c.move === Move.Vehicle && vehRoll > 0 ? -c.steer * Math.min(1, c.speed / 10) * vehRoll : c.move === Move.Slide ? 0.02 * this.side : 0;
     this.roll += (rollT - this.roll) * damp(5, dt);
 
     const cam = this.camera;

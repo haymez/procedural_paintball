@@ -11,14 +11,19 @@ import { makeBlobMaterial, makeBlobUniforms, type BlobUniforms } from "./blobMat
 import { MARKER_MUZZLE, MuzzlePuff } from "./marker";
 import { clamp, damp, lerp, smoothstep, Spring, rng } from "./builder";
 import type { PaintFx, Vec3Like } from "./paintFx";
+import { makeToonMaterial } from "../style";
 
 export type BlobMode =
   | "idle" | "run" | "sprint" | "jump" | "fall" | "slide" | "dive" | "swim" | "underwater"
-  | "mantle" | "ride-vespa" | "row" | "passenger" | "zipline" | "eliminated" | "spawn";
+  | "mantle" | "ride-vespa" | "row" | "passenger" | "zipline" | "eliminated" | "spawn"
+  /** Sky drop: spread out flat like a flying squirrel, skin flaps between arms and legs. */
+  | "glide"
+  /** Sky drop landing: pancaked flat on the ground, googly-eyed, then pops back up. */
+  | "splat";
 
 export const BLOB_MODES: BlobMode[] = [
   "idle", "run", "sprint", "jump", "fall", "slide", "dive", "swim", "underwater",
-  "mantle", "ride-vespa", "row", "passenger", "zipline", "eliminated", "spawn",
+  "mantle", "ride-vespa", "row", "passenger", "zipline", "eliminated", "spawn", "glide", "splat",
 ];
 
 export interface BlobState {
@@ -101,7 +106,9 @@ const enum P {
   headPitch, headYaw, headRoll, gunAim, gunLower,
   hLx, hLy, hLz, hRx, hRy, hRz, grip,
   fLx, fLy, fLz, fRx, fRy, fRz, fLp, fRp,
-  squash, crest, eyeOpen, mouthO, smile, slant, gunScale, aimFollow, COUNT,
+  squash, crest, eyeOpen, mouthO, smile, slant, gunScale, aimFollow,
+  /** Roll about the body's own long axis (banking while gliding belly-down). */
+  rootBank, COUNT,
 }
 
 const Y = new THREE.Vector3(0, 1, 0);
@@ -192,6 +199,12 @@ class Blob implements BlobActor {
   private popColor = new THREE.Color();
   private shieldA = 0;
   private flail = 0;
+  /** Glide: how far the limbs (and skin flaps) are spread, 0..1 (set by the pose). */
+  private spread = 0;
+  private flapOpen = 0;
+  private flaps: Flaps;
+  /** Googly-eye wobble after a splat landing. */
+  private googly = 0;
 
   // springs
   private squash = new Spring(320, 11, 1);
@@ -243,6 +256,9 @@ class Blob implements BlobActor {
     this.shield.renderOrder = 4;
     this.object.add(this.shield);
 
+    this.flaps = new Flaps(this.color);
+    this.object.add(this.flaps.mesh);
+
     neutral(this.out);
     this.from.set(this.out);
   }
@@ -252,6 +268,7 @@ class Blob implements BlobActor {
     this.color.set(color);
     this.u.uBody.value.copy(this.color);
     this.u.uBelly.value.copy(this.color).lerp(new THREE.Color(0xfff6e6), 0.45);
+    this.flaps?.setColor(this.color);
     this.u.uCrest.value.copy(crestColor !== undefined ? new THREE.Color(crestColor) : crestFor(color));
     if (changed && this.mesh) {
       const old = this.mesh.geometry;
@@ -380,6 +397,7 @@ class Blob implements BlobActor {
     if (s.mode === "jump" && s.vel.y > 0) this.squash.target = 1 + clamp(s.vel.y * 0.018, 0, 0.14);
     if (s.mode === "fall") this.squash.target = 1.06;
     this.squash.step(dt);
+    this.googly = Math.max(0, this.googly - dt * 0.7);
     this.jp.step(dt);
     this.jr.step(dt);
     this.hl.step(dt);
@@ -414,6 +432,9 @@ class Blob implements BlobActor {
 
     this.applyBones(s, bodyYaw, dt);
     this.applyMaterial(s, dt);
+    // skin flaps between arms and legs
+    this.flapOpen = lerp(this.flapOpen, s.mode === "glide" ? this.spread : 0, damp(s.mode === "glide" ? 12 : 20, dt));
+    this.flaps.update(this.flapOpen, this.bones, this.object, this.t);
 
     // FX bits
     if (this.fx) {
@@ -445,6 +466,22 @@ class Blob implements BlobActor {
     }
     if (m === "dive") { this.squash.v += 3; this.surprise = 1; }
     if (m === "fall") this.flail = 0;
+    if (m === "glide") { this.surprise = 1; this.spread = 0; }
+    if (m === "splat") {
+      // SPLORT: pancake flat, limbs splayed, eyes rattling
+      this.squash.v -= 7;
+      this.pudXZ.v += 5; this.pudXZ.target = 1.18;
+      this.wobble = 1;
+      this.googly = 1;
+      this.surprise = 1;
+      this.fade = 0.55;
+    }
+    if (prev === "splat") {
+      // ...and boing back up
+      this.squash.v += 12;
+      this.pudXZ.target = 1;
+      this.wobble = Math.max(this.wobble, 0.8);
+    }
     if (m === "swim" && prev === "underwater" && s.breath < 0.25) { this.gasp = 1; this.squash.v += 4; }
     if ((m === "swim" || m === "underwater") && (prev === "dive" || prev === "fall" || prev === "jump")) {
       this.wobble = 1;
@@ -728,6 +765,55 @@ class Blob implements BlobActor {
         o[P.headPitch] = -0.1;
         break;
       }
+      case "glide": {
+        // flying squirrel: belly down, arms and legs stretched wide, flaps taut
+        const hs = Math.hypot(s.vel.x, s.vel.z), sink = Math.max(0, -s.vel.y);
+        const ang = Math.atan2(sink, Math.max(1, hs)); // ~0.25 flare, ~0.4 glide, ~0.6 dive, ~1.4 tuck
+        const tuck = smoothstep(0.8, 1.15, ang);
+        const flare = 1 - smoothstep(0.26, 0.42, ang);
+        const open = smoothstep(0.05, 0.6, mt);
+        const sp = open * (1 - tuck);
+        this.spread = sp;
+        const fl = Math.sin(t * 19) * 0.03 + Math.sin(t * 31 + 1) * 0.015;
+        o[P.rootPitch] = 1.02 + ang * 0.55 - flare * 0.12 + tuck * 0.15 + (1 - open) * 0.3;
+        o[P.rootY] = 0.15;
+        o[P.rootBank] = clamp(this.yawRate * 0.2 + this.lvx * 0.035, -0.7, 0.7);
+        o[P.headPitch] = -0.95 + tuck * 0.35;
+        o[P.chestPitch] = -0.12;
+        o[P.gunAim] = 0;
+        o[P.aimFollow] = 0;
+        setHand(o, P.hLx, lerp(0.3, 0.8, sp), lerp(1.42, 1.05 + fl, sp), lerp(0.2, 0.12 + flare * 0.14, sp));
+        setHand(o, P.hRx, lerp(-0.3, -0.8, sp), lerp(1.42, 1.05 - fl, sp), lerp(0.2, 0.12 + flare * 0.14, sp));
+        setFoot(o, P.fLx, lerp(0.1, 0.44, sp), lerp(0.02, 0.12 - fl, sp), lerp(-0.08, -0.1, sp));
+        setFoot(o, P.fRx, lerp(-0.1, -0.44, sp), lerp(0.02, 0.12 + fl, sp), lerp(-0.08, -0.1, sp));
+        o[P.fLp] = 1.2;
+        o[P.fRp] = 1.2;
+        o[P.squash] = 1 - sp * 0.08;
+        o[P.mouthO] = 0.35 + tuck * 0.55 + (1 - open) * 0.5;
+        o[P.smile] = 1;
+        o[P.eyeOpen] = 1;
+        o[P.crest] = 1;
+        o[P.slant] = tuck * 0.45 - flare * 0.1;
+        break;
+      }
+      case "splat": {
+        // pancake: squashed flat, limbs splayed like a dropped gummy
+        o[P.squash] = 0.36;
+        o[P.gunAim] = 0;
+        o[P.aimFollow] = 0;
+        o[P.headPitch] = -0.15;
+        setHand(o, P.hLx, 0.4, 0.34, 0.2);
+        setHand(o, P.hRx, -0.4, 0.34, 0.2);
+        setFoot(o, P.fLx, 0.22, 0.02, -0.1);
+        setFoot(o, P.fRx, -0.22, 0.02, -0.1);
+        o[P.fLp] = -0.4;
+        o[P.fRp] = -0.4;
+        o[P.mouthO] = 0.55;
+        o[P.smile] = 0.6;
+        o[P.eyeOpen] = 1;
+        o[P.crest] = 1.1;
+        break;
+      }
       case "eliminated":
         o[P.gunAim] = 0;
         o[P.gunScale] = 0;
@@ -787,13 +873,13 @@ class Blob implements BlobActor {
 
     // ---- root: pivot around the body center, squash & stretch ----------------
     const root = bn[B.root];
-    let sy = clamp(this.squash.x * o[P.squash], 0.55, 1.5);
+    let sy = clamp(this.squash.x * o[P.squash], this.mode === "splat" ? 0.26 : 0.55, 1.5);
     let sxz = 1 / Math.sqrt(sy);
     if (this.mode === "eliminated") this.stepElimination(dt);
     const popS = this.mode === "spawn" ? Math.max(0.001, this.pop.x) : 1;
     sy *= this.pudY.x * popS;
     sxz *= this.pudXZ.x * popS;
-    _e.set(o[P.rootPitch], 0, o[P.rootRoll]);
+    _e.set(o[P.rootPitch], o[P.rootBank], o[P.rootRoll]);
     root.quaternion.setFromEuler(_e);
     const pivot = 0.9;
     _v.set(0, pivot, 0).applyQuaternion(root.quaternion);
@@ -878,6 +964,7 @@ class Blob implements BlobActor {
 
     // ---- face ------------------------------------------------------------------
     const elim = this.mode === "eliminated";
+    const flat = elim || this.mode === "splat";
     const closed = clamp(Math.max(1 - o[P.eyeOpen], this.blink > 0 ? Math.sin(this.blink * Math.PI) : 0, this.wince, (this.sinceFire < 0.35 ? 0.3 : 0)), 0, 1);
     const eyeScale = 1 + this.surprise * 0.18 + this.gasp * 0.1;
     const lookP = clamp(s.aimPitch * 0.45, -0.35, 0.35) + this.saccY;
@@ -888,7 +975,7 @@ class Blob implements BlobActor {
       const sgn = side === 0 ? 1 : -1;
       const eye = bn[side === 0 ? B.eyeL : B.eyeR];
       eye.scale.setScalar(eyeScale);
-      if (elim) {
+      if (flat) {
         // keep the eyes round and poking out of the puddle
         eye.scale.set(eyeScale / Math.max(0.2, root.scale.x), eyeScale / Math.max(0.12, root.scale.y), eyeScale / Math.max(0.2, root.scale.z));
       }
@@ -897,6 +984,10 @@ class Blob implements BlobActor {
         // dazed spinning pupils
         const a = t * 9 + side * Math.PI;
         pupil.rotation.set(Math.sin(a) * 0.35, Math.cos(a) * 0.35, 0);
+      } else if (this.googly > 0) {
+        // googly eyes rattling after a splat landing
+        const g = this.googly * this.googly;
+        pupil.rotation.set(-this.lookY + Math.sin(t * 17 + side * 2.1) * 0.45 * g, this.lookX + Math.cos(t * 13 + side) * 0.45 * g, 0);
       } else pupil.rotation.set(-this.lookY, this.lookX - sgn * 0.06, 0);
       const lid = bn[side === 0 ? B.lidL : B.lidR];
       lid.rotation.set(lerp(-0.9, 1.5, closed), 0, sgn * o[P.slant] * 0.5);
@@ -1033,6 +1124,7 @@ class Blob implements BlobActor {
     this.shield.geometry.dispose();
     this.shieldMat.dispose();
     this.puff.dispose();
+    this.flaps.dispose();
   }
 }
 
@@ -1097,6 +1189,88 @@ void main() {
   #include <colorspace_fragment>
 }
 `;
+
+// ---------------------------------------------------------------------------
+// Skin flaps (patagia): a soft membrane per side from shoulder to hip on the
+// body and from hand to foot on the outside, billowing up between them.
+
+const FU = 7; // along (shoulder → hip)
+const FV = 4; // across (body → hand/foot edge)
+const _fs = new THREE.Vector3(), _fh = new THREE.Vector3(), _fa = new THREE.Vector3(), _ff = new THREE.Vector3();
+const _fi = new THREE.Vector3(), _fo = new THREE.Vector3(), _fup = new THREE.Vector3();
+
+class Flaps {
+  readonly mesh: THREE.Mesh;
+  private pos: Float32Array;
+  private geo: THREE.BufferGeometry;
+  private mat: THREE.MeshToonMaterial;
+
+  constructor(color: THREE.Color) {
+    this.geo = new THREE.BufferGeometry();
+    this.pos = new Float32Array(2 * FU * FV * 3);
+    this.geo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    const idx: number[] = [];
+    for (let side = 0; side < 2; side++) {
+      const b = side * FU * FV;
+      for (let u = 0; u < FU - 1; u++)
+        for (let v = 0; v < FV - 1; v++) {
+          const a = b + u * FV + v, c = a + FV;
+          if (side === 0) idx.push(a, c, a + 1, a + 1, c, c + 1);
+          else idx.push(a, a + 1, c, a + 1, c + 1, c);
+        }
+    }
+    this.geo.setIndex(idx);
+    this.mat = makeToonMaterial({ side: THREE.DoubleSide });
+    this.setColor(color);
+    this.mesh = new THREE.Mesh(this.geo, this.mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
+    this.mesh.name = "flaps";
+  }
+
+  setColor(c: THREE.Color): void {
+    this.mat.color.copy(c).lerp(new THREE.Color(0xfff6e6), 0.1);
+  }
+
+  /** open 0..1; positions from the rig bones (object-local). */
+  update(open: number, bones: THREE.Bone[], obj: THREE.Object3D, t: number): void {
+    this.mesh.visible = open > 0.03;
+    if (!this.mesh.visible) return;
+    // the blob's back (billow direction), object-local
+    _fup.set(0, 0, -1).applyQuaternion(bones[B.root].quaternion); // root sits directly under the object
+    const p = this.pos;
+    for (let side = 0; side < 2; side++) {
+      obj.worldToLocal(bones[side === 0 ? B.armL : B.armR].getWorldPosition(_fs));
+      obj.worldToLocal(bones[side === 0 ? B.legL : B.legR].getWorldPosition(_fh));
+      obj.worldToLocal(bones[side === 0 ? B.handL : B.handR].getWorldPosition(_fa));
+      obj.worldToLocal(bones[side === 0 ? B.footL : B.footR].getWorldPosition(_ff));
+      const b = side * FU * FV;
+      for (let u = 0; u < FU; u++) {
+        const fu = u / (FU - 1);
+        _fi.lerpVectors(_fs, _fh, fu);
+        _fo.lerpVectors(_fa, _ff, fu);
+        // scalloped outer edge: sags inward between wrist and ankle
+        const scallop = Math.sin(Math.PI * fu) * 0.28;
+        _fo.lerp(_fi, scallop);
+        for (let v = 0; v < FV; v++) {
+          const fv = (v / (FV - 1)) * open;
+          const k = (b + u * FV + v) * 3;
+          const billow = Math.sin(Math.PI * fu) * Math.sin(Math.PI * Math.min(1, fv * 1.15)) * (0.1 + Math.sin(t * 23 + u * 1.3 + side) * 0.012);
+          p[k] = _fi.x + (_fo.x - _fi.x) * fv + _fup.x * billow;
+          p[k + 1] = _fi.y + (_fo.y - _fi.y) * fv + _fup.y * billow;
+          p[k + 2] = _fi.z + (_fo.z - _fi.z) * fv + _fup.z * billow;
+        }
+      }
+    }
+    (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    this.geo.computeVertexNormals();
+  }
+
+  dispose(): void {
+    this.geo.dispose();
+    this.mat.dispose();
+  }
+}
 
 export function createBlob(opts: BlobOptions): BlobActor {
   return new Blob(opts);

@@ -319,7 +319,7 @@ function runSingle() {
             : `<span style="display:inline-flex;align-items:center;gap:4px"><span class="dia" style="background:${D.css(p.color)}"><b>${p.letter}</b></span>${p.name} ${pk.get(p.kind)}</span>`,
         )
         .join(" &nbsp;"),
-      vehicles: [VehicleKind.Rowboat, VehicleKind.Gondola, VehicleKind.Vespa].map((k) => `${D.VEHICLE_NAMES[k].toLowerCase()} ${vk.get(k) ?? 0}`).join(" · "),
+      vehicles: [VehicleKind.Jetski, VehicleKind.Speedboat, VehicleKind.Vespa, VehicleKind.Gyrocopter].map((k) => `${D.VEHICLE_NAMES[k].toLowerCase()} ${vk.get(k) ?? 0}`).join(" · "),
     };
     const host = $("layers");
     host.innerHTML = "";

@@ -8,7 +8,6 @@ export interface InputHandlers {
   onMap?(): void;
   onScoreboard?(open: boolean): void;
   onShoulder?(): void;
-  onSpawnPick?(i: number): void;
   onLockChange?(locked: boolean): void;
 }
 
@@ -131,8 +130,6 @@ export class Input {
     if (e.code === "Escape") { this.h.onPause?.(); return; }
     if (e.code === "KeyM") { this.h.onMap?.(); return; }
     if (e.code === "KeyQ") { this.h.onShoulder?.(); return; }
-    if (e.code === "Digit1") this.h.onSpawnPick?.(0);
-    if (e.code === "Digit2") this.h.onSpawnPick?.(1);
     if (!this.locked && e.code !== "Space") return;
     if (e.code === "Space" || e.code.startsWith("Arrow") || e.code === "ControlLeft") e.preventDefault();
     this.keys.add(e.code);

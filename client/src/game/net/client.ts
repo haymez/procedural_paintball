@@ -17,12 +17,12 @@
 //                anything that happens *to me* flushes the queue at once.
 import {
   BALL_GRAVITY, BALL_LIFE, BALL_RADIUS, HIT_R, HULL, SEATS, INTERACT_R, Move, NO_WATER_Y, TICK_DT, VEHICLE_NAMES, ZIP_FEET, ZIP_GRAB_R,
-  ZIP_START_SPEED, copyPlayerState, createPlayerState, seatWorld, segCapsule, waterAt, zipPoint,
+  ZIP_START_SPEED, canBoard, copyPlayerState, createPlayerState, seatWorld, segCapsule, vehicleVerb, waterAt, zipPoint,
   type InputCmd, type InteractTarget, type PickupState, type PlayerInfo, type PlayerState, type ProjectileState, type SimEnv,
   type SimEvent, type SimSnapshot, type VehicleState,
 } from "../../../../shared/sim/index";
 import { raycast } from "../../../../shared/world/collide";
-import { VehicleKind, type World } from "../../../../shared/world/types";
+import type { World } from "../../../../shared/world/types";
 import { atan2, cos, sin } from "../../../../shared/math/trig";
 import {
   Input, OWN, PLAYER_COLORS, PickupOp, REMOTE, VEHICLE, applyDeltaRec, applyWire, newWire, quantizeCmd,
@@ -817,9 +817,6 @@ export class NetClient {
       case "move":
         this.push(e, tick, C_RENDER);
         return;
-      case "spawnChoices":
-        this.push(e, tick, C_NOW, true);
-        return;
       default:
         this.push(e, tick, C_NOW);
     }
@@ -957,10 +954,8 @@ export class NetClient {
       if (d > INTERACT_R || Math.abs(p.y - v.y) > 2.6) continue;
       const seat = v.seats.indexOf(-1);
       if (seat < 0) continue;
-      if (v.kind === VehicleKind.Vespa && p.move !== Move.Ground) continue;
-      const label = v.kind === VehicleKind.Vespa ? (seat === 0 ? "Ride the Vespa" : "Hop on the back") :
-        v.kind === VehicleKind.Rowboat ? (seat === 0 ? "Row the boat" : "Ride along") :
-        seat === 0 ? "Pole the gondola" : "Ride the gondola";
+      if (!canBoard(v.kind, p.move)) continue;
+      const label = vehicleVerb(v.kind, seat);
       if (!best || d < best.dist) best = { kind: "vehicle", id: v.id, seat, label, dist: d };
     }
     const zs = this.env.ziplines;

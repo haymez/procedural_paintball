@@ -267,9 +267,17 @@ export interface PickupSpawn {
 }
 
 export enum VehicleKind {
-  Rowboat = 0,
-  Gondola = 1,
+  /** 1 rider, very fast and nimble, hops off swells. (Wire value 0 was the rowboat.) */
+  Jetski = 0,
+  /** Riva-style runabout: driver + 2 passengers, planes bow-up. (Wire value 1 was the gondola.) */
+  Speedboat = 1,
   Vespa = 2,
+  /** Open-cockpit autogyro: 1 pilot, arcade flight. */
+  Gyrocopter = 3,
+}
+/** Jetski / Speedboat: lives on the water. */
+export function isBoat(kind: VehicleKind): boolean {
+  return kind === VehicleKind.Jetski || kind === VehicleKind.Speedboat;
 }
 export interface VehicleSpawn {
   kind: VehicleKind;

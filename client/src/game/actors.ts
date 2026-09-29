@@ -2,14 +2,14 @@
 // and name tags are created lazily and driven every frame from the snapshot,
 // interpolated between the last two ticks.
 import * as THREE from "three";
-import { PickupKind, VehicleKind } from "../../../shared/world/types";
+import { PickupKind, VehicleKind, isBoat } from "../../../shared/world/types";
 import { sdf, terrainHeight } from "../../../shared/world/collide";
 import {
   Move, SPAWN_SHIELD, WASH_TIME, NO_WATER_Y,
   type PlayerState, type SimSnapshot, type VehicleState, type ProjectileState, type SimEnv,
 } from "../../../shared/sim/index";
 import {
-  createBlob, createNameTag, createPaintFx, createPickup, createVehicle, createZipline,
+  createBlob, createNameTag, createPaintFx, createPickup, createVehicle, createZipline, GYRO_COLORS, JETSKI_COLORS, VESPA_COLORS,
   type BlobActor, type BlobMode, type BlobState, type NameTag, type PaintFx, type PickupActor, type VehicleActor, type ZiplineActor,
 } from "../render/actors/index";
 import type { WorldView } from "../render/worldView";
@@ -115,7 +115,9 @@ export class Actors {
   private ensureVehicle(v: VehicleState): VehicleWrap {
     let w = this.vehicles.get(v.id);
     if (w) return w;
-    const actor = createVehicle(v.kind, { fx: this.fx, color: v.kind === VehicleKind.Vespa ? undefined : undefined });
+    // a little color variety between craft of the same kind
+    const palette = v.kind === VehicleKind.Vespa ? VESPA_COLORS : v.kind === VehicleKind.Jetski ? JETSKI_COLORS : v.kind === VehicleKind.Gyrocopter ? GYRO_COLORS : null;
+    const actor = createVehicle(v.kind, { fx: this.fx, color: palette ? palette[v.id % palette.length] : undefined });
     let holder: THREE.Group | null = null;
     if (v.kind === VehicleKind.Vespa) {
       holder = new THREE.Group();
@@ -193,8 +195,9 @@ export class Actors {
         w.holder.updateMatrixWorld(true);
         w.actor.update(dt, { pos: { x: 0, y: 0, z: 0 }, yaw: 0, speed: v.speed, steer: v.steer, throttle: Math.max(0, v.throttle), occupied });
       } else {
-        const wy = y + (y > -0.5 && y < 0.5 ? this.view.waveHeight(x, z, this.time) * 0.8 : 0);
-        w.actor.update(dt, { pos: { x, y, z }, yaw, speed: v.speed, steer: v.steer, rowing: v.seats[0] >= 0 && Math.abs(v.throttle) > 0.05, occupied, waterY: wy });
+        // boats ride the visual swell (the sim water is flat)
+        const wy = isBoat(v.kind) && !v.airborne ? y + (y > -0.5 && y < 0.5 ? this.view.waveHeight(x, z, this.time) * 0.8 : 0) : y;
+        w.actor.update(dt, { pos: { x, y, z }, yaw, speed: v.speed, steer: v.steer, throttle: v.throttle, occupied, waterY: wy, pitch: v.pitch, airborne: v.airborne });
       }
     }
 
@@ -237,7 +240,8 @@ export class Actors {
       a.wet = inWater ? 1 : Math.max(0, a.wet - dt * 0.12);
       st.wetness = a.wet;
       a.spawnT += dt;
-      st.shield = p.alive && p.shield > 0 ? Math.min(1, p.shield / SPAWN_SHIELD + 0.2) : 0;
+      // (no bubble on sky divers: the flaps are the show; it pops up once they're down)
+      st.shield = p.alive && p.shield > 0 && p.move !== Move.Glide && p.move !== Move.Splat ? Math.min(1, p.shield / SPAWN_SHIELD + 0.2) : 0;
       st.mode = this.modeFor(p, a);
       if (p.move === Move.Vehicle && p.vehicle >= 0) {
         const w = this.vehicles.get(p.vehicle);
@@ -365,7 +369,7 @@ export class Actors {
 
   private modeFor(p: PlayerState, a: PlayerActor): BlobMode {
     if (!p.alive) return "eliminated";
-    if (a.spawnT < 0.55) return "spawn";
+    if (a.spawnT < 0.55 && p.move !== Move.Glide) return "spawn";
     switch (p.move) {
       case Move.Ground: {
         const s = Math.hypot(p.vx, p.vz);
@@ -379,6 +383,8 @@ export class Actors {
       case Move.Underwater: return "underwater";
       case Move.Mantle: return "mantle";
       case Move.Zipline: return "zipline";
+      case Move.Glide: return "glide";
+      case Move.Splat: return "splat";
       case Move.Vehicle: {
         if (p.seat === 0) {
           const w = this.vehicles.get(p.vehicle);

@@ -91,9 +91,10 @@ export const PICKUP_INFO: { kind: PickupKind; name: string; letter: string; colo
 ];
 export const pickupInfo = (k: number) => PICKUP_INFO.find((p) => p.kind === k) ?? PICKUP_INFO[0];
 export const VEHICLE_NAMES: Record<VehicleKind, string> = {
-  [VehicleKind.Rowboat]: "Rowboat",
-  [VehicleKind.Gondola]: "Gondola",
+  [VehicleKind.Jetski]: "Jetski",
+  [VehicleKind.Speedboat]: "Speedboat",
   [VehicleKind.Vespa]: "Vespa",
+  [VehicleKind.Gyrocopter]: "Gyrocopter",
 };
 
 // ------------------------------------------------------------- sampling ---
@@ -558,34 +559,46 @@ export function drawVehicles(ctx: CanvasRenderingContext2D, w: World, v: View) {
     ctx.lineWidth = 1.2 / k;
     ctx.strokeStyle = "#1c1410";
     ctx.beginPath();
-    if (veh.kind === VehicleKind.Rowboat) {
-      ctx.moveTo(0, 7);
-      ctx.quadraticCurveTo(4, 2, 3.2, -5);
-      ctx.lineTo(-3.2, -5);
-      ctx.quadraticCurveTo(-4, 2, 0, 7);
-      ctx.fillStyle = "#b5773f";
+    if (veh.kind === VehicleKind.Jetski) {
+      ctx.moveTo(0, 6);
+      ctx.quadraticCurveTo(2.8, 2, 2.4, -4.5);
+      ctx.lineTo(-2.4, -4.5);
+      ctx.quadraticCurveTo(-2.8, 2, 0, 6);
+      ctx.fillStyle = "#9fd8c8";
       ctx.fill();
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(-3, 0);
-      ctx.lineTo(3, 0);
-      ctx.moveTo(-2.6, -3);
-      ctx.lineTo(2.6, -3);
-      ctx.strokeStyle = "#f3e2c2";
-      ctx.stroke();
-    } else if (veh.kind === VehicleKind.Gondola) {
+      ctx.roundRect(-1, -3.5, 2, 4, 1);
+      ctx.fillStyle = "#fff0d2";
+      ctx.fill();
+    } else if (veh.kind === VehicleKind.Speedboat) {
       ctx.moveTo(0, 10);
-      ctx.quadraticCurveTo(2.6, 2, 2, -7);
-      ctx.quadraticCurveTo(0, -9.5, -2, -7);
-      ctx.quadraticCurveTo(-2.6, 2, 0, 10);
-      ctx.fillStyle = "#23232b";
+      ctx.quadraticCurveTo(4, 4, 3.4, -8);
+      ctx.lineTo(-3.4, -8);
+      ctx.quadraticCurveTo(-4, 4, 0, 10);
+      ctx.fillStyle = "#a4552f";
       ctx.fill();
-      ctx.strokeStyle = "#f2e6c9";
       ctx.stroke();
       ctx.beginPath();
-      ctx.arc(0, 1, 1.3, 0, Math.PI * 2);
-      ctx.fillStyle = "#e0b04a";
+      ctx.rect(-2.4, -1, 4.8, 3);
+      ctx.rect(-2.4, -5.5, 4.8, 3);
+      ctx.fillStyle = "#fff4dc";
       ctx.fill();
+    } else if (veh.kind === VehicleKind.Gyrocopter) {
+      ctx.ellipse(0, 1, 2.6, 4.2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#f7d77a";
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-9, -2);
+      ctx.lineTo(9, 2);
+      ctx.moveTo(0, -3);
+      ctx.lineTo(0, -9);
+      ctx.moveTo(-3, -9);
+      ctx.lineTo(3, -9);
+      ctx.lineWidth = 1.8 / k;
+      ctx.strokeStyle = "#e0644f";
+      ctx.stroke();
     } else {
       ctx.roundRect(-2.2, -4.5, 4.4, 9, 2.2);
       ctx.fillStyle = "#7fd1c7";
