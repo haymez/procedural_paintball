@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "isola",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // The client is served as static assets. /ws/* and /api/* must reach the
+  // Worker first, otherwise the SPA fallback would answer them with index.html.
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/ws/*", "/api/*"]
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOBBY", "class_name": "IsolaLobby" },
+      { "name": "ROOM", "class_name": "IsolaRoom" }
+    ]
+  },
+
+  // SQLite-backed classes are required on the Workers Free plan.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["IsolaLobby", "IsolaRoom"] }],
+
+  "observability": { "enabled": true }
+}

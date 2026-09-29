@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Isola – actors</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #bfe6f5; font-family: ui-rounded, system-ui, sans-serif; }
+      canvas { display: block; }
+      #hud { position: fixed; left: 10px; top: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255,250,240,.8); color: #5a3a2a; font-size: 12px; line-height: 1.5; pointer-events: auto; }
+      #hud button { font: inherit; margin: 2px 2px 0 0; border: 0; border-radius: 8px; padding: 2px 8px; background: #ffc48a; color: #5a3a2a; cursor: pointer; }
+      #hud.hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="hud"></div>
+    <script type="module" src="/tools/actors.ts"></script>
+  </body>
+</html>

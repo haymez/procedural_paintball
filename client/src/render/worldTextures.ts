@@ -1,0 +1,188 @@
+// GPU textures derived from the World grids, plus CPU-side samplers.
+// All grid textures are GRID_RES^2 with texel centers on grid samples:
+//   uv = ((x + WORLD_HALF) / CELL + 0.5) / GRID_RES
+import * as THREE from "three";
+import { Biome, CELL, GRID_RES, NO_WATER, WORLD_HALF, type World } from "../../../shared/world/types";
+import { PALETTE, WORLD_PALETTE } from "./style";
+
+export interface WorldTextures {
+  height: THREE.DataTexture; // R16F height
+  ground: THREE.DataTexture; // sRGB base color, a = AO
+  mask: THREE.DataTexture; // r rock, g sand, b path, a paving (village)
+  normal: THREE.DataTexture; // rg normal xz, b shore/wet (unused), a holes
+  normals: Float32Array; // CPU normals, 3 per sample
+  ao: Float32Array;
+  dispose(): void;
+}
+
+/** GLSL: map world xz to grid-texture uv. */
+export const GRID_UV_GLSL = /* glsl */ `
+vec2 gridUV(vec2 xz) { return ((xz + ${WORLD_HALF.toFixed(1)}) / ${CELL.toFixed(4)} + 0.5) / ${GRID_RES.toFixed(1)}; }
+`;
+
+export function heightAt(world: World, x: number, z: number): number {
+  const gx = (x + WORLD_HALF) / CELL, gz = (z + WORLD_HALF) / CELL;
+  const ix = Math.max(0, Math.min(GRID_RES - 2, Math.floor(gx)));
+  const iz = Math.max(0, Math.min(GRID_RES - 2, Math.floor(gz)));
+  const fx = Math.max(0, Math.min(1, gx - ix)), fz = Math.max(0, Math.min(1, gz - iz));
+  const h = world.height;
+  const i = iz * GRID_RES + ix;
+  const a = h[i], b = h[i + 1], c = h[i + GRID_RES], d = h[i + GRID_RES + 1];
+  return a + (b - a) * fx + (c - a) * fz + (a - b - c + d) * fx * fz;
+}
+
+export function gridIndex(x: number, z: number): number {
+  const ix = Math.max(0, Math.min(GRID_RES - 1, Math.round((x + WORLD_HALF) / CELL)));
+  const iz = Math.max(0, Math.min(GRID_RES - 1, Math.round((z + WORLD_HALF) / CELL)));
+  return iz * GRID_RES + ix;
+}
+
+/** Fresh water level at (x,z), or NO_WATER. */
+export function freshWaterAt(world: World, x: number, z: number): number {
+  return world.water[gridIndex(x, z)];
+}
+
+const BIOME_COLOR: Record<number, number> = {
+  [Biome.DeepOcean]: 0xcbb98a,
+  [Biome.Shallows]: WORLD_PALETTE.seabed,
+  [Biome.Beach]: PALETTE.sand,
+  [Biome.PalmGrove]: 0xadc163,
+  [Biome.Jungle]: 0x6c9c4a,
+  [Biome.Mangrove]: 0x71904a,
+  [Biome.Meadow]: 0xa9c466,
+  [Biome.Scrub]: 0xaeaa62,
+  [Biome.Rock]: WORLD_PALETTE.limestone,
+  [Biome.Cliff]: WORLD_PALETTE.limestoneWarm,
+  [Biome.Riverbank]: 0x8cb558,
+  [Biome.Village]: 0xd8bf94,
+};
+
+function boxBlur(src: Float32Array, n: number, r: number): Float32Array {
+  const tmp = new Float32Array(src.length);
+  const out = new Float32Array(src.length);
+  const w = 1 / (2 * r + 1);
+  for (let z = 0; z < n; z++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[z * n + Math.min(n - 1, Math.max(0, k))];
+    for (let x = 0; x < n; x++) {
+      tmp[z * n + x] = acc * w;
+      const xa = Math.min(n - 1, x + r + 1), xr = Math.max(0, x - r);
+      acc += src[z * n + xa] - src[z * n + xr];
+    }
+  }
+  for (let x = 0; x < n; x++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += tmp[Math.min(n - 1, Math.max(0, k)) * n + x];
+    for (let z = 0; z < n; z++) {
+      out[z * n + x] = acc * w;
+      const za = Math.min(n - 1, z + r + 1), zr = Math.max(0, z - r);
+      acc += tmp[za * n + x] - tmp[zr * n + x];
+    }
+  }
+  return out;
+}
+
+export function buildWorldTextures(world: World): WorldTextures {
+  const N = GRID_RES;
+  const n = N * N;
+  const h = world.height;
+
+  // --- height (half float) ---
+  const hHalf = new Uint16Array(n);
+  for (let i = 0; i < n; i++) hHalf[i] = THREE.DataUtils.toHalfFloat(h[i]);
+  const height = new THREE.DataTexture(hHalf, N, N, THREE.RedFormat, THREE.HalfFloatType);
+  height.magFilter = height.minFilter = THREE.LinearFilter;
+  height.wrapS = height.wrapT = THREE.ClampToEdgeWrapping;
+  height.needsUpdate = true;
+
+  // --- normals ---
+  const normals = new Float32Array(n * 3);
+  const nrmData = new Uint8Array(n * 4);
+  for (let z = 0; z < N; z++) {
+    for (let x = 0; x < N; x++) {
+      const i = z * N + x;
+      const hl = h[z * N + Math.max(0, x - 1)], hr = h[z * N + Math.min(N - 1, x + 1)];
+      const hd = h[Math.max(0, z - 1) * N + x], hu = h[Math.min(N - 1, z + 1) * N + x];
+      let nx = -(hr - hl) / (2 * CELL), ny = 1, nz = -(hu - hd) / (2 * CELL);
+      const l = Math.hypot(nx, ny, nz);
+      nx /= l; ny /= l; nz /= l;
+      normals[i * 3] = nx; normals[i * 3 + 1] = ny; normals[i * 3 + 2] = nz;
+      nrmData[i * 4] = Math.round((nx * 0.5 + 0.5) * 255);
+      nrmData[i * 4 + 1] = Math.round((nz * 0.5 + 0.5) * 255);
+      nrmData[i * 4 + 2] = world.water[i] !== NO_WATER ? 255 : 0;
+      nrmData[i * 4 + 3] = world.holes[i] ? 255 : 0;
+    }
+  }
+  const normal = new THREE.DataTexture(nrmData, N, N, THREE.RGBAFormat);
+  normal.magFilter = normal.minFilter = THREE.LinearFilter;
+  normal.needsUpdate = true;
+
+  // --- AO: concavity at two scales ---
+  const hf = new Float32Array(h);
+  const blurBig = boxBlur(boxBlur(hf, N, 5), N, 5);
+  const blurSmall = boxBlur(hf, N, 2);
+  const ao = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const cBig = blurBig[i] - h[i];
+    const cSmall = blurSmall[i] - h[i];
+    let a = 1 - Math.max(0, cBig) * 0.045 - Math.max(0, cSmall) * 0.12;
+    a += Math.max(0, -cBig) * 0.01; // ridges slightly brighter
+    ao[i] = Math.max(0.4, Math.min(1, a));
+  }
+
+  // --- ground base color: biome colors blurred, moisture-tinted ---
+  const cr = new Float32Array(n), cg = new Float32Array(n), cb = new Float32Array(n);
+  const rock = new Float32Array(n), sand = new Float32Array(n), pave = new Float32Array(n);
+  const tmp = new THREE.Color();
+  const cache = new Map<number, THREE.Color>();
+  for (let i = 0; i < n; i++) {
+    const b = world.biome[i];
+    let col = cache.get(b);
+    if (!col) { col = new THREE.Color(BIOME_COLOR[b] ?? PALETTE.grass); cache.set(b, col); }
+    tmp.copy(col);
+    const veg = b === Biome.Jungle || b === Biome.Meadow || b === Biome.PalmGrove || b === Biome.Scrub || b === Biome.Riverbank || b === Biome.Mangrove;
+    if (veg) {
+      const m = world.moisture[i] / 255;
+      // dry -> golden, wet -> deep lush
+      tmp.lerp(new THREE.Color(0xc2b35c), Math.max(0, 0.45 - m) * 0.9);
+      tmp.multiplyScalar(0.92 + (1 - m) * 0.12);
+      if (m > 0.6) tmp.lerp(new THREE.Color(0x578c42), (m - 0.6) * 0.4);
+    }
+    cr[i] = tmp.r; cg[i] = tmp.g; cb[i] = tmp.b;
+    rock[i] = b === Biome.Rock || b === Biome.Cliff ? 1 : 0;
+    sand[i] = b === Biome.Beach || b === Biome.Shallows || b === Biome.DeepOcean ? 1 : b === Biome.PalmGrove ? 0.35 : 0;
+    pave[i] = b === Biome.Village ? 1 : 0;
+  }
+  const br = boxBlur(cr, N, 1), bg = boxBlur(cg, N, 1), bb = boxBlur(cb, N, 1);
+  const rockB = boxBlur(rock, N, 1), sandB = boxBlur(sand, N, 1), paveB = boxBlur(pave, N, 1);
+  const gData = new Uint8Array(n * 4);
+  const mData = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    tmp.setRGB(br[i], bg[i], bb[i]); // linear
+    tmp.convertLinearToSRGB();
+    gData[i * 4] = Math.round(Math.min(1, tmp.r) * 255);
+    gData[i * 4 + 1] = Math.round(Math.min(1, tmp.g) * 255);
+    gData[i * 4 + 2] = Math.round(Math.min(1, tmp.b) * 255);
+    gData[i * 4 + 3] = Math.round(ao[i] * 255);
+    mData[i * 4] = Math.round(rockB[i] * 255);
+    mData[i * 4 + 1] = Math.round(sandB[i] * 255);
+    mData[i * 4 + 2] = world.path[i];
+    mData[i * 4 + 3] = Math.round(paveB[i] * 255);
+  }
+  const ground = new THREE.DataTexture(gData, N, N, THREE.RGBAFormat);
+  ground.colorSpace = THREE.SRGBColorSpace;
+  ground.magFilter = THREE.LinearFilter;
+  ground.minFilter = THREE.LinearMipmapLinearFilter;
+  ground.generateMipmaps = true;
+  ground.needsUpdate = true;
+  const mask = new THREE.DataTexture(mData, N, N, THREE.RGBAFormat);
+  mask.magFilter = THREE.LinearFilter;
+  mask.minFilter = THREE.LinearMipmapLinearFilter;
+  mask.generateMipmaps = true;
+  mask.needsUpdate = true;
+
+  return {
+    height, ground, mask, normal, normals, ao,
+    dispose() { height.dispose(); ground.dispose(); mask.dispose(); normal.dispose(); },
+  };
+}

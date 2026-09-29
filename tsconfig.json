@@ -1,0 +1,6 @@
+// shared/ (pure, environment-free code) and tests. No DOM, no Workers globals.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2022"], "types": ["node"] },
+  "include": ["shared", "tests", "vite.config.ts", "vitest.config.ts"]
+}

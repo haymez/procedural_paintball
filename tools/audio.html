@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Isola – audio bench</title>
+    <style>
+      :root { --bg: #fdf6ea; --ink: #5a3a2a; --soft: #8a6a58; --card: #fffaf2; --acc: #ffc48a; --acc2: #2a9d9b; --line: #ecdcc6; }
+      html, body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 ui-rounded, system-ui, sans-serif; }
+      main { max-width: 1280px; margin: 0 auto; padding: 14px 16px 40px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+      h1 { grid-column: 1 / -1; margin: 0; font-size: 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      h2 { margin: 0 0 8px; font-size: 14px; }
+      h3 { margin: 10px 0 4px; font-size: 12px; color: var(--soft); text-transform: uppercase; letter-spacing: .04em; }
+      section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
+      section.wide { grid-column: 1 / -1; }
+      button { font: inherit; margin: 2px 2px 0 0; border: 0; border-radius: 8px; padding: 3px 9px; background: var(--acc); color: var(--ink); cursor: pointer; }
+      button.on { background: var(--acc2); color: #fff; }
+      button.big { font-size: 15px; padding: 6px 14px; }
+      label.row { display: grid; grid-template-columns: 130px 1fr 56px; gap: 8px; align-items: center; margin: 2px 0; }
+      label.row input[type=range] { width: 100%; }
+      .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--soft); }
+      #status { font-size: 12px; font-weight: normal; color: var(--soft); }
+      canvas { display: block; max-width: 100%; border-radius: 8px; background: #fff; }
+      table { border-collapse: collapse; font-size: 11px; width: 100%; font-variant-numeric: tabular-nums; }
+      td, th { padding: 1px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+      td:first-child, th:first-child { text-align: left; }
+      .bad { color: #c0392b; font-weight: bold; }
+      #shotGrid { position: fixed; inset: 0; background: #fff; display: none; z-index: 10; }
+      #shotGrid.show { display: block; }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <canvas id="shotGrid"></canvas>
+    <script type="module" src="/tools/audio.ts"></script>
+  </body>
+</html>
