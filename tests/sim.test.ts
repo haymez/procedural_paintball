@@ -5,7 +5,7 @@ import type { World } from "../shared/world/types";
 import {
   BODY_R, Btn, createEnv, createPlayerState, copyPlayerState, MatchSim, Move, STEP_H, stepPlayer, TICK_DT, waterAt,
   NO_WATER_Y, probeGround, BLOCKED, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, WASH_TIME, DROP_MIN_Y, DROP_MAX_Y, DROP_SCATTER, DROP_LAND_SHIELD, RESPAWN_DELAY,
-  SPLAT_TIME, GLIDE_ACCEL, Fx, BOAT_DRAFT, GYRO_CEILING, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
+  SPLAT_TIME, Fx, BOAT_DRAFT, GYRO_CEILING, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
 } from "../shared/sim/index";
 import { Dummy } from "../shared/sim/dummy";
 import { VehicleKind } from "../shared/world/types";
@@ -411,7 +411,7 @@ describe("snapshots", () => {
 });
 
 describe("sky drop", () => {
-  /** Glide p toward (tx, tz) like a player would (flare when it's far, dive / tuck when it's close) until it lands. */
+  /** Glide p toward (tx, tz) like a player would (look at the spot, hold W) until it lands. */
   function glideTo(sim: MatchSim, id: number, tx: number, tz: number, maxSec = 60): { t: number; fx: number } {
     const p = sim.player(id)!;
     let fx = 0, t = 0;
@@ -421,12 +421,7 @@ describe("sky drop", () => {
       let g = terrainHeight(world, tx, tz);
       for (const a of [30, 70]) if (a < d) g = Math.max(g, terrainHeight(world, p.x + (dx / d) * a, p.z + (dz / d) * a) + 4);
       const h = Math.max(1, p.y - g);
-      const need = d / h;
-      const c = cmd({ seq: i, yaw: d > 1 ? Math.atan2(dx, dz) : p.yaw });
-      // about to overshoot: brake (tuck when there's height to lose, else flare)
-      const v = Math.hypot(p.vx, p.vz);
-      if (d < (v * v) / (2 * GLIDE_ACCEL) + 6) { c.moveZ = -1; if (d < 10 && h > 10) c.buttons = Btn.Sprint; }
-      else c.moveZ = need > 2.4 ? -1 : need < 1.5 ? 1 : 0;
+      const c = cmd({ seq: i, yaw: d > 1 ? Math.atan2(dx, dz) : p.yaw, pitch: -Math.min(1.45, Math.atan2(h, d)), moveZ: 1 });
       sim.applyInput(id, c);
       sim.step();
       t += TICK_DT;
@@ -465,23 +460,44 @@ describe("sky drop", () => {
     expect(p.y).toBeGreaterThan(DROP_MIN_Y - 3);
   });
 
-  it("a neutral drop takes 8-14 s and lands with a splat: no damage, no stumble, shielded a moment after", () => {
+  it("eliminated players leave their leftover paint (and upgrades) behind", () => {
+    const sim = new MatchSim(world, { env });
+    const a = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+    sim.addPlayer(2, { name: "B", color: 0x00ff00, isBot: false });
+    const s = flatSpot();
+    sim.teleport(1, s.x, s.y, s.z);
+    for (let i = 0; i < 30; i++) sim.step();
+    a.shield = 0;
+    a.hopper = 12; a.reserve = 50;
+    for (let i = 0; i < 3; i++) sim.paint(1, 2);
+    expect(a.alive).toBe(false);
+    const k = sim.pickups.find((k) => k.ammo > 0)!;
+    expect(k.ammo).toBe(62);
+    expect(k.drop).toBe(0);
+    // someone low on paint scoops it up
+    const c = sim.addPlayer(3, { name: "C", color: 0x0000ff, isBot: false });
+    c.move = Move.Ground; c.shield = 0; c.reserve = 10;
+    expect(sim.collect(c, k)).toBe(true);
+    expect(c.reserve).toBe(72);
+  });
+
+  it("a hands-off drop (default view) takes 10-20 s and lands with a splat: no damage, no stumble, shielded a moment after", () => {
     const sim = new MatchSim(world, { env });
     const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
     const s = flatSpot();
     let t = 0, fx = 0, splatT = 0, landShield = 0;
-    // no input: glide straight along the view toward the flat spot
+    // no keys, the view the drop starts with: glide along it toward the flat spot
     const yaw = Math.atan2(s.x - p.x, s.z - p.z);
     for (let i = 0; i < 60 * 30 && p.move === Move.Glide; i++) {
-      sim.applyInput(1, cmd({ seq: i, yaw }));
+      sim.applyInput(1, cmd({ seq: i, yaw, pitch: -0.45 }));
       sim.step();
       t += TICK_DT;
       expect(p.shield).toBeGreaterThan(0);
       for (const e of sim.events) if (e.type === "move" && e.pid === 1) fx |= e.fx;
       sim.events.length = 0;
     }
-    expect(t).toBeGreaterThan(8);
-    expect(t).toBeLessThan(14);
+    expect(t).toBeGreaterThan(10);
+    expect(t).toBeLessThan(20);
     expect(fx & Fx.SkyLand).toBeTruthy();
     expect(fx & Fx.LandHard).toBeFalsy();
     if (p.move === Move.Splat) {
@@ -500,6 +516,33 @@ describe("sky drop", () => {
     // the landing shield runs out
     for (let i = 0; i < 60 * (DROP_LAND_SHIELD + 0.2); i++) { sim.applyInput(1, cmd({ seq: 6000 + i, yaw })); sim.step(); }
     expect(p.shield).toBeLessThanOrEqual(0);
+  });
+
+  it("flies like an Apex skydive: look down to dive, W / S for speed, dive speed carries into a glide", () => {
+    /** Fly for `sec` s with a fixed input from a fresh drop; returns horizontal speed and sink rate. */
+    const fly = (legs: [number, Partial<InputCmd>][]) => {
+      const sim = new MatchSim(world, { env });
+      const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+      p.y += 300; // plenty of air under us
+      let i = 0;
+      for (const [sec, c] of legs) for (let k = 0; k < sec * 60; k++) { sim.applyInput(1, cmd({ seq: i++, ...c })); sim.step(); }
+      expect(p.move).toBe(Move.Glide);
+      return { hs: Math.hypot(p.vx, p.vz), sink: -p.vy };
+    };
+    const levelW = fly([[6, { moveZ: 1 }]]), levelS = fly([[6, { moveZ: -1 }]]), level = fly([[6, {}]]);
+    expect(levelW.hs).toBeGreaterThan(level.hs + 4);
+    expect(level.hs).toBeGreaterThan(levelS.hs + 4);
+    // level: a long flat glide; looking down: a steep fast dive
+    expect(levelW.hs / levelW.sink).toBeGreaterThan(3.5);
+    const dive = fly([[6, { moveZ: 1, pitch: -1.45 }]]);
+    expect(dive.sink).toBeGreaterThan(45);
+    expect(dive.hs).toBeLessThan(15);
+    // looking up: no flatter than level, and slower
+    const up = fly([[6, { moveZ: 1, pitch: 0.8 }]]);
+    expect(up.hs).toBeLessThan(levelW.hs);
+    // dive, then pull up: coasting faster than a level glide can go
+    const swoop = fly([[4, { moveZ: 1, pitch: -1.2 }], [2, { moveZ: 1 }]]);
+    expect(swoop.hs).toBeGreaterThan(levelW.hs + 8);
   });
 
   it("can reach any corner of the island, and land right where it aims", () => {

@@ -82,7 +82,7 @@ export function writeEvent(w: Writer, e: SimEvent & { seq?: number }): void {
       wpos(w, e.x, e.y, e.z);
       break;
     case "pickup":
-      w.u8(e.pid).varu(e.pickup).u8(e.kind).u8(e.drop);
+      w.u8(e.pid).varu(e.pickup).u8(e.kind).u8(e.drop).varu(e.ammo);
       wpos(w, e.x, e.y, e.z);
       break;
     case "pickupSpawn":
@@ -168,8 +168,8 @@ export function readEvent(r: Reader, tick: number): NetEvent {
       return { type, pid, ...rpos(r), tick };
     }
     case "pickup": {
-      const pid = r.u8(), pickup = r.varu(), kind = r.u8(), drop = r.u8();
-      return { type, pid, pickup, kind, drop, ...rpos(r), tick };
+      const pid = r.u8(), pickup = r.varu(), kind = r.u8(), drop = r.u8(), ammo = r.varu();
+      return { type, pid, pickup, kind, drop, ammo, ...rpos(r), tick };
     }
     case "pickupSpawn":
       return { type, pickup: r.varu(), tick };

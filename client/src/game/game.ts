@@ -173,7 +173,7 @@ export class Game {
   private startDrop(me: PlayerState): void {
     this.sky.refresh(this.source.snapshot().time);
     this.input.yaw = this.dropFacing(me);
-    this.input.pitch = -0.62;
+    this.input.pitch = -0.45;
     this.wasDropping = true;
     this.landEase = 0;
   }
@@ -700,8 +700,10 @@ export class Game {
           if (e.drop) {
             const names: string[] = [];
             for (let k = 1; k <= 7; k++) if (e.drop & (1 << k)) names.push(upgradeName(k as PickupKind));
+            if (e.ammo) names.push(`+${e.ammo} paint`);
             this.hud.toast("Loot!", names.join(" · "), "#f6c94c");
-          } else if (e.kind === PickupKind.Ammo) this.hud.toast("+Paint", "Reserve refilled", "#ffc9a8");
+          } else if (e.ammo) this.hud.toast("+Paint", `Scavenged ${e.ammo} paintballs`, "#ffc9a8");
+          else if (e.kind === PickupKind.Ammo) this.hud.toast("+Paint", "Reserve refilled", "#ffc9a8");
           else this.hud.upgradeToast(e.kind as PickupKind);
           sfx(e.kind === PickupKind.Ammo ? "pickup" : "upgrade");
         }

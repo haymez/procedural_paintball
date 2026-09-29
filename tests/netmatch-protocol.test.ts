@@ -154,7 +154,7 @@ const sampleEvents: SimEvent[] = [
   { type: "elim", victim: 4, killer: 3, x: 1, y: 2, z: 3, tags: 5, place: "", dist: 22.5 },
   { type: "elim", victim: 4, killer: -1, x: 1, y: 2, z: 3, tags: 0, place: "", dist: 0 },
   { type: "respawn", pid: 4, x: -100, y: 20, z: 50 },
-  { type: "pickup", pid: 3, pickup: 70, kind: 2, drop: 6, x: 5, y: 6, z: 7 },
+  { type: "pickup", pid: 3, pickup: 70, kind: 2, drop: 6, ammo: 83, x: 5, y: 6, z: 7 },
   { type: "pickupSpawn", pickup: 12 },
   { type: "vehicleEnter", pid: 3, vehicle: 2, seat: 1 },
   { type: "vehicleExit", pid: 3, vehicle: 2 },

@@ -1,10 +1,10 @@
 // Bots in a sky drop (Move.Glide, then the Move.Splat landing): pick a landing
 // spot near the action — a hot zone or an enemy on the ground, with a personal
 // scatter so a pack of bots doesn't pile onto one spot — and glide there with
-// the same W / S / Shift controls a human uses. Deterministic (seeded Rng).
+// the same controls a human uses: look at the spot, hold W. Deterministic (seeded Rng).
 import type { Rng } from "../../math/rng";
 import { atan2, cos, sin } from "../../math/trig";
-import { Btn, GLIDE_ACCEL, glideReach, Move, type HotZone, type InputCmd, type MatchSim, type PlayerState } from "../../sim/index";
+import { glideReach, Move, type HotZone, type InputCmd, type MatchSim, type PlayerState } from "../../sim/index";
 import { terrainHeight } from "../../world/collide";
 import { NF } from "../constants";
 import { nearestNode } from "../nav";
@@ -41,7 +41,7 @@ export class SkyDiver {
     this.active = false;
   }
 
-  /** One tick of steering while p is gliding or pancaked. Writes yaw / moveX / moveZ / buttons into cmd. */
+  /** One tick of steering while p is gliding or pancaked. Writes yaw / pitch / moveX / moveZ into cmd. */
   steer(sim: MatchSim, p: PlayerState, hub: BotHub, cfg: BotConfig, rng: Rng, stats: BotStats, cmd: InputCmd, dt: number): void {
     if (!this.active) {
       this.active = true;
@@ -49,8 +49,7 @@ export class SkyDiver {
       this.plan(sim, p, hub, cfg, rng);
     }
     { const m = hyp(p.x - this.lx, p.z - this.lz); if (m < 5) stats.distance += m; this.lx = p.x; this.lz = p.z; }
-    cmd.pitch = -0.5;
-    if (p.move === Move.Splat) { cmd.yaw = p.yaw; return; }
+    if (p.move === Move.Splat) { cmd.yaw = p.yaw; cmd.pitch = -0.5; return; }
     // chase the enemy we picked (they move), a few times a second
     this.retargetT -= dt;
     if (this.follow >= 0 && this.retargetT <= 0) {
@@ -67,16 +66,14 @@ export class SkyDiver {
     const h = Math.max(1, p.y - g);
     cmd.yaw = d > 1.5 ? atan2(dx, dz) : p.yaw;
     cmd.moveX = 0;
-    // glide ratio still needed: flare when short of it, dive when high above it; brake before overshooting,
-    // and tuck (plummet) once right over it
-    const need = d / h;
-    const v = hyp(p.vx, p.vz);
-    if (d < (v * v) / (2 * GLIDE_ACCEL) + 6) { cmd.moveZ = -1; if (d < 10 && h > 10) cmd.buttons |= Btn.Sprint; }
-    else cmd.moveZ = need > 2.4 ? -1 : need < 1.5 ? 1 : 0;
+    // aim straight at the spot and hold W: the path follows the view (too far away to
+    // reach aims level, the flattest glide; right over it dives)
+    cmd.pitch = -Math.min(1.45, atan2(h, d));
+    cmd.moveZ = 1;
   }
 
   private plan(sim: MatchSim, p: PlayerState, hub: BotHub, cfg: BotConfig, rng: Rng): void {
-    const reach = glideReach(p.y - 25).flare * 0.85;
+    const reach = glideReach(p.y - 25).max * 0.85;
     const cand = _cand;
     cand.length = 0;
     for (const z of sim.action.zones(sim.time, _zones, 4)) cand.push({ x: z.x, z: z.z, w: 1.5 + z.heat, id: -1 });

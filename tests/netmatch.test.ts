@@ -53,7 +53,8 @@ function script(c: TestClient, t: number): void {
   k.moveZ = t % 300 < 240 ? 1 : 0;
   k.moveX = t % 500 > 380 ? 1 : 0;
   k.yaw = 0.8 + Math.sin(t / 90) * 1.5;
-  k.pitch = -0.1;
+  // (sky drops: look down and dive, so the scripted player gets onto the ground)
+  k.pitch = c.nc.me()?.move === Move.Glide ? -1.3 : -0.1;
   k.buttons = (t % 400 < 200 ? Btn.Sprint : 0) | (t % 150 < 2 ? Btn.Jump : 0) | (t % 45 < 1 ? Btn.Fire : 0) | (t % 700 === 350 ? Btn.Crouch : 0);
 }
 

@@ -249,7 +249,7 @@ export class Hud {
     // sky drop card
     this.dropEl = el("div", "ih-dropcard card hidden",
       `<div class="t">Sky drop!</div><div class="alt num">180 m</div>` +
-      `<div class="keys"><kbd>Mouse</kbd><span>steer</span><kbd>W</kbd><span>dive</span><kbd>S</kbd><span>flare · float</span><kbd>Shift</kbd><span>plummet</span></div>` +
+      `<div class="keys"><kbd>Mouse</kbd><span>steer · look down to dive, up to glide</span><kbd>W</kbd><span>faster</span><kbd>S</kbd><span>slower</span></div>` +
       `<div class="hint">Glowing beams = fights happening now</div>`);
     this.dropAlt = this.dropEl.querySelector(".alt") as El;
     this.root.appendChild(this.dropEl);

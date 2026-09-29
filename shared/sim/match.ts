@@ -97,7 +97,7 @@ export class MatchSim {
     this.rng = new Rng((opts.seed ?? world.seed) ^ 0x6d617463);
     world.pickups.forEach((p, i) => {
       const g = probeGround(this.env, p.x, p.y + 1.5, p.z, 4);
-      this.pickups.push({ id: i, kind: p.kind, x: p.x, y: g === BLOCKED || g === -Infinity ? p.y : g, z: p.z, active: true, respawn: 0, drop: 0, ttl: 0 });
+      this.pickups.push({ id: i, kind: p.kind, x: p.x, y: g === BLOCKED || g === -Infinity ? p.y : g, z: p.z, active: true, respawn: 0, drop: 0, ammo: 0, ttl: 0 });
     });
     this.nextPickup = world.pickups.length;
     this.drop = dropSite(world);
@@ -333,16 +333,18 @@ export class MatchSim {
     victim.deaths++;
     victim.streak = 0;
     victim.lastKiller = killer && killer !== victim ? killer.id : -1;
-    if (victim.upgrades) {
+    // leave their upgrades and leftover paint behind
+    const ammo = victim.hopper + victim.reserve;
+    if (victim.upgrades || ammo > 0) {
       const id = this.nextPickup++;
-      // pick the "headline" upgrade for the visual
-      let kind = PickupKind.Vest;
+      // pick the "headline" upgrade for the visual (just paint: an ammo cache)
+      let kind = PickupKind.Ammo;
       for (let k = 1; k <= 7; k++) if (victim.upgrades & (1 << k)) { kind = k as PickupKind; break; }
       const g = probeGround(this.env, victim.x, victim.y + 1, victim.z, 30);
       const W = waterAt(this.env, victim.x, victim.z);
       let py = g === BLOCKED || g === -Infinity ? victim.y : g;
       if (W !== NO_WATER_Y && W > py) py = W; // floats
-      this.pickups.push({ id, kind, x: victim.x, y: py, z: victim.z, active: true, respawn: 0, drop: victim.upgrades, ttl: C.DROP_LIFETIME });
+      this.pickups.push({ id, kind, x: victim.x, y: py, z: victim.z, active: true, respawn: 0, drop: victim.upgrades, ammo, ttl: C.DROP_LIFETIME });
     }
     this.leaveVehicle(victim, false);
     victim.zip = -1;
@@ -352,6 +354,8 @@ export class MatchSim {
     victim.vx = 0; victim.vy = 0; victim.vz = 0;
     victim.deadT = 0;
     victim.upgrades = 0;
+    victim.hopper = 0;
+    victim.reserve = 0;
     victim.reload = 0;
     this.action.add(this.time, x, z, HOT_W.elim);
     this.events.push({ type: "elim", victim: victim.id, killer: killer ? killer.id : -1, x, y, z, tags, place: this.placeName(victim.x, victim.z), dist: d });
@@ -541,7 +545,7 @@ export class MatchSim {
     const list = this.pickups;
     for (let i = list.length - 1; i >= 0; i--) {
       const k = list[i];
-      if (k.drop) {
+      if (k.drop || k.ammo) {
         k.ttl -= dt;
         if (k.ttl <= 0 || !k.active) { list.splice(i, 1); continue; }
       } else if (!k.active) {
@@ -564,9 +568,11 @@ export class MatchSim {
   /** Try to collect; false if the player doesn't need it. */
   collect(p: PlayerState, k: PickupState): boolean {
     if (!k.active) return false;
-    if (k.drop) {
+    if (k.drop || k.ammo) {
+      // a just-paint drop waits for someone who needs it
+      if (!k.drop && p.reserve >= C.RESERVE_MAX) return false;
       p.upgrades |= k.drop;
-      p.reserve = Math.min(C.RESERVE_MAX, p.reserve + 20);
+      p.reserve = Math.min(C.RESERVE_MAX, p.reserve + k.ammo);
     } else if (k.kind === PickupKind.Ammo) {
       if (p.reserve >= C.RESERVE_MAX && p.hopper >= hopperCap(p)) return false;
       p.reserve = Math.min(C.RESERVE_MAX, p.reserve + C.AMMO_CACHE);
@@ -576,7 +582,7 @@ export class MatchSim {
     }
     k.active = false;
     k.respawn = k.kind === PickupKind.Ammo ? C.AMMO_RESPAWN : C.UPGRADE_RESPAWN;
-    this.events.push({ type: "pickup", pid: p.id, pickup: k.id, kind: k.kind, drop: k.drop, x: k.x, y: k.y, z: k.z });
+    this.events.push({ type: "pickup", pid: p.id, pickup: k.id, kind: k.kind, drop: k.drop, ammo: k.ammo, x: k.x, y: k.y, z: k.z });
     return true;
   }
 

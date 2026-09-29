@@ -20,8 +20,10 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   shimmer into a dark teal-navy "sea monster" skin (cosmetic only).
 - **Sky drop** (every spawn, match start included): you appear ~170–215 m
   over the middle of the island and glide down like a flying squirrel (limbs
-  spread, skin flaps; `Move.Glide`): the view steers, W dives, S flares (slow
-  and flat: reaches any corner), Shift tucks into a plummet, A/D slip. No
+  spread, skin flaps; `Move.Glide`), controlled like Apex Legends' skydive:
+  the view steers and its pitch sets the flight path (look down to dive, level
+  or up for the flattest glide: reaches any corner), W speeds up, S slows
+  down, A/D slip. Speed carries: dive to build it, pull up and coast. No
   parachute: you splat onto the ground (`Move.Splat`, ~0.4 s pancake, no
   damage) and pop back up; water = belly-flop into a swim. No shooting and
   shielded for the whole drop + 1.5 s. While dropping, the HUD shows every
@@ -33,7 +35,8 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
 - **Paintball marker**: slow arcing projectiles (~45 m/s, gravity), effective
   range ~40 m, limited hopper + reserve. Ammo caches and upgrades around the
   island (BigHopper, RapidFire, LongBarrel, Scope, Vest, QuickFeet, Snorkel).
-  Upgrades are lost on elimination and drop as a pickup.
+  Upgrades are lost on elimination and drop as a pickup, along with the
+  victim's leftover paintballs (hopper + reserve).
 - **Transport**: fast boats — jetskis (1 rider, hop off swells) on beaches
   and Riva-style speedboats (driver + 2 passengers who can shoot) at docks and
   cove jetties — Vespas on dirt paths, 2 pastel gyrocopters on open flat

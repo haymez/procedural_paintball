@@ -373,29 +373,37 @@ function stepUnderwater(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number):
 // ---------------------------------------------------------------------------
 // sky drop: flying-squirrel glide, then a splat landing
 
-/** Target (horizontal speed, sink rate) for the glide input: S flares ← neutral → W dives; Shift tucks. */
-function glideTargets(cmd: InputCmd): void {
-  const mz = clamp(cmd.moveZ, -1, 1);
-  if (cmd.buttons & Btn.Sprint) { gHs = C.GLIDE_TUCK_SPEED; gVs = C.GLIDE_TUCK_SINK; }
-  else if (mz >= 0) {
-    gHs = C.GLIDE_SPEED + (C.GLIDE_DIVE_SPEED - C.GLIDE_SPEED) * mz;
-    gVs = C.GLIDE_SINK + (C.GLIDE_DIVE_SINK - C.GLIDE_SINK) * mz;
-  } else {
-    gHs = C.GLIDE_SPEED + (C.GLIDE_FLARE_SPEED - C.GLIDE_SPEED) * -mz;
-    gVs = C.GLIDE_SINK + (C.GLIDE_FLARE_SINK - C.GLIDE_SINK) * -mz;
-  }
-}
-let gHs = 0, gVs = 0;
-
+/**
+ * Apex-style skydive: the aim pitch picks the flight path (look down to dive, level or up
+ * for the flattest glide), W / S raise / lower the airspeed, and speed carries (it builds
+ * fast in a dive and bleeds off slowly), so diving then pulling up coasts a long way.
+ */
 function stepGlide(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number): number {
   let fx = 0;
-  glideTargets(cmd);
-  // the view steers: glide along it, slip sideways with A/D
+  const mz = clamp(cmd.moveZ, -1, 1);
+  const look = -clamp(cmd.pitch, -1.45, 1.45);
+  const ang = clamp(look, C.GLIDE_MIN_ANGLE, C.GLIDE_MAX_ANGLE);
+  const sa = sin(ang);
+  const up = look < 0 ? -look / 1.45 : 0;
+  // target airspeed: steeper = faster; W / neutral / S; looking up stalls
+  const k = (ang - C.GLIDE_MIN_ANGLE) / (C.GLIDE_MAX_ANGLE - C.GLIDE_MIN_ANGLE);
+  const thr = mz >= 0 ? C.GLIDE_NEUTRAL + (1 - C.GLIDE_NEUTRAL) * mz : C.GLIDE_NEUTRAL + (C.GLIDE_NEUTRAL - C.GLIDE_BRAKE) * mz;
+  const T = (C.GLIDE_FLAT_SPEED + (C.GLIDE_DIVE_SPEED - C.GLIDE_FLAT_SPEED) * k) * thr * (1 - C.GLIDE_STALL * up);
+  let s = Math.sqrt(p.vx * p.vx + p.vy * p.vy + p.vz * p.vz);
+  if (s < T) s = Math.min(T, s + (C.GLIDE_GAIN + C.GLIDE_GAIN_DIVE * sa) * dt);
+  else s = Math.max(T, s - (C.GLIDE_DRAG + (mz < 0 ? C.GLIDE_BRAKE_DRAG * -mz : 0)) * dt);
+  // swing the velocity onto the path along the view (plus the A/D slip)
   const sy = sin(cmd.yaw), cy = cos(cmd.yaw);
-  const mx = clamp(cmd.moveX, -1, 1) * C.GLIDE_STRAFE;
-  approach(p, sy * gHs - cy * mx, cy * gHs + sy * mx, C.GLIDE_ACCEL * dt);
-  const dv = -gVs - p.vy, a = C.GLIDE_VACCEL * dt;
-  p.vy += dv > a ? a : dv < -a ? -a : dv;
+  // (a forced minimum sink comes out of the forward speed, so it can't feed the airspeed)
+  const vt = Math.max(s * sa, C.GLIDE_MIN_SINK);
+  const hs = vt < s ? Math.sqrt(s * s - vt * vt) : 0, mx = clamp(cmd.moveX, -1, 1) * C.GLIDE_STRAFE;
+  let dx = sy * hs - cy * mx - p.vx, dy = -vt - p.vy, dz = cy * hs + sy * mx - p.vz;
+  const l = Math.sqrt(dx * dx + dy * dy + dz * dz), a = C.GLIDE_TURN * dt;
+  if (l > a) { dx *= a / l; dy *= a / l; dz *= a / l; }
+  p.vx += dx; p.vy += dy; p.vz += dz;
+  // swinging onto a new path turns the velocity, it doesn't cut the corner (a pull-up keeps its speed)
+  const nl = Math.sqrt(p.vx * p.vx + p.vy * p.vy + p.vz * p.vz), tl = Math.sqrt(s * s + mx * mx);
+  if (nl > 1e-3) { const r = tl / nl; p.vx *= r; p.vy *= r; p.vz *= r; }
   p.grounded = false;
   p.sprinting = false;
 

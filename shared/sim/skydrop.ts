@@ -2,7 +2,8 @@
 // its highest peak. Computed once per world from the height grid (plain
 // arithmetic, so server and clients agree).
 import { CELL, GRID_RES, WORLD_HALF, type World } from "../world/types";
-import { DROP_CLEARANCE, DROP_MAX_Y, DROP_MIN_Y, GLIDE_FLARE_SINK, GLIDE_FLARE_SPEED, GLIDE_SINK, GLIDE_SPEED } from "./constants";
+import { sin } from "../math/trig";
+import { DROP_CLEARANCE, DROP_MAX_Y, DROP_MIN_Y, GLIDE_FLAT_SPEED, GLIDE_MIN_ANGLE, GLIDE_MIN_SINK, GLIDE_NEUTRAL } from "./constants";
 
 export interface DropSite {
   /** Centroid of the land (m). */
@@ -36,8 +37,12 @@ export function dropSite(world: World): DropSite {
   return d;
 }
 
-/** How far (m) a glider `height` m above the ground can still get: neutral and flared. */
-export function glideReach(height: number): { neutral: number; flare: number } {
+/** How far (m) a glider `height` m above the ground can still get on the flattest path: coasting, and holding W. */
+export function glideReach(height: number): { neutral: number; max: number } {
   const h = height > 0 ? height : 0;
-  return { neutral: (h / GLIDE_SINK) * GLIDE_SPEED, flare: (h / GLIDE_FLARE_SINK) * GLIDE_FLARE_SPEED };
+  const ratio = (v: number) => {
+    const vt = Math.max(v * sin(GLIDE_MIN_ANGLE), GLIDE_MIN_SINK);
+    return Math.sqrt(Math.max(0, v * v - vt * vt)) / vt;
+  };
+  return { neutral: h * ratio(GLIDE_FLAT_SPEED * GLIDE_NEUTRAL), max: h * ratio(GLIDE_FLAT_SPEED) };
 }

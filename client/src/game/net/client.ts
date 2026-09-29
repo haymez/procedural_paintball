@@ -256,7 +256,7 @@ export class NetClient {
     this.info.clear();
     this.onRoster({ add: m.roster, remove: [] });
     this.pickups.clear();
-    for (const k of m.pickups) this.pickups.set(k.id, { id: k.id, kind: k.kind, x: k.x, y: k.y, z: k.z, active: k.active, respawn: 0, drop: k.drop, ttl: 0 });
+    for (const k of m.pickups) this.pickups.set(k.id, { id: k.id, kind: k.kind, x: k.x, y: k.y, z: k.z, active: k.active, respawn: 0, drop: k.drop, ammo: 0, ttl: 0 });
     this.paintInit = m.paint.map((p: PaintRec) => ({ ...p, color: hexOf(p.color) }));
     this.listsDirty = true;
   }
@@ -321,7 +321,7 @@ export class NetClient {
     for (const p of m.pickups) {
       if (p.op === PickupOp.Add && p.init) {
         const k = p.init;
-        this.pickups.set(k.id, { id: k.id, kind: k.kind, x: k.x, y: k.y, z: k.z, active: k.active, respawn: 0, drop: k.drop, ttl: 0 });
+        this.pickups.set(k.id, { id: k.id, kind: k.kind, x: k.x, y: k.y, z: k.z, active: k.active, respawn: 0, drop: k.drop, ammo: 0, ttl: 0 });
         this.listsDirty = true;
       } else if (p.op === PickupOp.Remove) {
         this.pickups.delete(p.id);

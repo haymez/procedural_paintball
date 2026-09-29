@@ -163,6 +163,8 @@ export interface PickupState {
   respawn: number;
   /** Dropped by an eliminated player: bitmask of upgrades; world pickups: 0. */
   drop: number;
+  /** Dropped by an eliminated player: the paintballs they had left (hopper + reserve); world pickups: 0. */
+  ammo: number;
   /** Dropped pickups vanish after this many seconds. */
   ttl: number;
 }
@@ -205,7 +207,7 @@ export type SimEvent =
   | { type: "projEnd"; proj: number }
   | { type: "elim"; victim: number; killer: number; x: number; y: number; z: number; tags: number; place: string; dist: number }
   | { type: "respawn"; pid: number; x: number; y: number; z: number }
-  | { type: "pickup"; pid: number; pickup: number; kind: number; drop: number; x: number; y: number; z: number }
+  | { type: "pickup"; pid: number; pickup: number; kind: number; drop: number; ammo: number; x: number; y: number; z: number }
   | { type: "pickupSpawn"; pickup: number }
   | { type: "vehicleEnter"; pid: number; vehicle: number; seat: number }
   | { type: "vehicleExit"; pid: number; vehicle: number }

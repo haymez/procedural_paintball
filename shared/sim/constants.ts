@@ -257,23 +257,35 @@ export const DROP_MIN_Y = 170;
 export const DROP_MAX_Y = 215;
 /** Drops start over the island's middle, scattered within this radius (m). */
 export const DROP_SCATTER = 45;
-/** Glide target velocities: horizontal speed along the view and sink rate (m/s). Neutral = no W/S. */
-export const GLIDE_SPEED = 30;
-export const GLIDE_SINK = 13;
-/** W: nose down, faster and steeper. */
-export const GLIDE_DIVE_SPEED = 40;
-export const GLIDE_DIVE_SINK = 27;
-/** S: flare, slow and flat (the longest reach: every corner of the island). */
-export const GLIDE_FLARE_SPEED = 20;
-export const GLIDE_FLARE_SINK = 5.2;
-/** Shift: tuck the flaps in and plummet (get down right here, now). */
-export const GLIDE_TUCK_SPEED = 8;
-export const GLIDE_TUCK_SINK = 46;
+/**
+ * Glide (Apex-style skydive): the aim pitch sets the flight path — look down to
+ * dive, level or up for the flattest glide — and W / S push the airspeed up or
+ * down. Speed carries: dive to build it, then pull up and coast on it.
+ */
+/** Flattest path (rad below the horizon): looking any higher doesn't flatten it more. */
+export const GLIDE_MIN_ANGLE = 0.24;
+/** Steepest path (looking straight down). */
+export const GLIDE_MAX_ANGLE = 1.4;
+/** Airspeed held with W on the flattest path, and straight down (m/s). */
+export const GLIDE_FLAT_SPEED = 30;
+export const GLIDE_DIVE_SPEED = 58;
+/** Fraction of that airspeed held with no W/S, and with S held. */
+export const GLIDE_NEUTRAL = 0.7;
+export const GLIDE_BRAKE = 0.35;
+/** Looking up (toward straight up) sheds up to this fraction of the target airspeed. */
+export const GLIDE_STALL = 0.3;
+/** You always sink at least this fast (m/s). */
+export const GLIDE_MIN_SINK = 7;
+/** Speeding up (m/s²): GAIN, plus GAIN_DIVE × sin(path angle). Diving builds speed fast. */
+export const GLIDE_GAIN = 6;
+export const GLIDE_GAIN_DIVE = 30;
+/** Slowing down (m/s²): speed built in a dive bleeds off slowly; S brakes harder. */
+export const GLIDE_DRAG = 4;
+export const GLIDE_BRAKE_DRAG = 12;
+/** How fast the velocity swings onto the new path (m/s²): pull-ups and push-overs swoop. */
+export const GLIDE_TURN = 70;
 /** A/D: sideways slip (m/s). */
 export const GLIDE_STRAFE = 11;
-/** How hard the glider chases its target velocity (m/s²): high = easy to land where you want. */
-export const GLIDE_ACCEL = 30;
-export const GLIDE_VACCEL = 26;
 /** Pancaked on landing for this long, then pop back up. */
 export const SPLAT_TIME = 0.42;
 /** Spawn shield: the whole drop, plus this long after touching down. */
