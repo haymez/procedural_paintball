@@ -5,8 +5,9 @@ import {
   Move, MAX_COATS, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, RELOAD_TIME, hopperCap, hasUpgrade, upgradeName, type PlayerState, type SimSnapshot,
 } from "../../../../shared/sim/index";
 import {
-  damageArcSvg, emptySlotSvg, hex, hitMarkerSvg, PLAYER_ARROW, splatSvg, UPGRADE_BLURB, UPGRADE_COLORS, UPGRADE_ICONS,
+  BOAT_ICON, damageArcSvg, emptySlotSvg, hex, hitMarkerSvg, PLAYER_ARROW, splatSvg, UPGRADE_BLURB, UPGRADE_COLORS, UPGRADE_ICONS, VESPA_ICON,
 } from "./art";
+import { blobSvg } from "../../ui/art";
 import { renderMapImage } from "./mapImage";
 import { STYLE_LABELS, splatVerb } from "../names";
 import type { Settings } from "../settings";
@@ -44,6 +45,27 @@ function el(tag: string, cls = "", html = ""): El {
 }
 
 const TAU = Math.PI * 2;
+/** Radar sweep: every RADAR_PERIOD s every living enemy's position is captured; blips stay solid for
+ *  RADAR_SOLID s, then dim to RADAR_DIM until the next sweep replaces them. */
+const RADAR_PERIOD = 6;
+const RADAR_SOLID = 3;
+const RADAR_DIM = 0.45;
+/** Out-of-range radar blips pinned to the minimap rim / shown on the compass. */
+const RADAR_NEAREST = 3;
+
+interface Blip { id: number; x: number; z: number; color: number; name: string }
+
+/** Enemy on the minimap: their color inside a thick cream ring and an ink outline, unmistakable against the terrain. */
+function enemyDot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: number): void {
+  ctx.fillStyle = "#23374b";
+  ctx.beginPath(); ctx.arc(x, y, r + 4.5, 0, TAU); ctx.fill();
+  ctx.fillStyle = "#fffaf0";
+  ctx.beginPath(); ctx.arc(x, y, r + 3, 0, TAU); ctx.fill();
+  ctx.fillStyle = hex(color);
+  ctx.strokeStyle = "#23374b";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
+}
 /** Compass bearing (rad, 0 = north = -Z, east = +X) of a yaw. */
 function bearingOfYaw(yaw: number): number {
   return Math.atan2(Math.sin(yaw), -Math.cos(yaw));
@@ -70,6 +92,9 @@ export class Hud {
   private miniCanvas: HTMLCanvasElement;
   private miniCtx: CanvasRenderingContext2D;
   private miniT = 0;
+  private radar: Blip[] = [];
+  /** Seconds since the last radar sweep. */
+  private radarAge = RADAR_PERIOD;
   private placeEl: El;
   private feedEl: El;
   private scoreEl: El;
@@ -276,6 +301,28 @@ export class Hud {
     }
   }
 
+  // ------------------------------------------------------------------ radar
+  private sweepRadar(f: HudFrame): void {
+    this.radarAge = 0;
+    this.radar = [];
+    const me = f.me;
+    for (const p of f.snap.players) {
+      if ((me && p.id === me.id) || !p.alive) continue;
+      const info = f.snap.info.get(p.id);
+      this.radar.push({ id: p.id, x: p.x, z: p.z, color: info?.color ?? 0xf47b63, name: info?.name ?? "" });
+    }
+  }
+  /** Visibility of the current radar blips: solid, then dimmed "last seen" until the next sweep. */
+  private radarAlpha(): number {
+    if (!this.radar.length) return 0;
+    const t = Math.min(1, Math.max(0, (this.radarAge - RADAR_SOLID) / 1.2));
+    return 1 - t * (1 - RADAR_DIM);
+  }
+  /** Radar blips sorted by distance from (x, z). */
+  private radarByDistance(x: number, z: number): { b: Blip; d: number }[] {
+    return this.radar.map((b) => ({ b, d: Math.hypot(b.x - x, b.z - z) })).sort((a, c) => a.d - c.d);
+  }
+
   /** Gunfire on the compass: anyone who fired in the last few seconds within earshot, as a pip in their color. */
   private pings: El[] = [];
   private updateCompassPings(f: HudFrame): void {
@@ -300,10 +347,36 @@ export class Hud {
         e.style.left = x.toFixed(1) + "px";
         e.style.opacity = (1 - t / 3).toFixed(2);
         e.style.background = hex(f.snap.info.get(p.id)?.color ?? 0xf47b63);
+        e.style.borderColor = "";
+        e.classList.remove("radar");
         e.classList.toggle("edge", Math.abs(rel) > fov / 2);
         e.classList.toggle("near", d < 60);
         n++;
         if (n >= 8) break;
+      }
+      // the nearest radar blips, hollow, so you always know which way the fight is
+      const ra = this.radarAlpha();
+      if (ra > 0) {
+        let k = 0;
+        for (const { b, d } of this.radarByDistance(me.x, me.z)) {
+          if (k >= RADAR_NEAREST || n >= 12) break;
+          if (d < 4) continue;
+          if ((f.noise.get(b.id) ?? 99) <= 3) continue; // already shown as gunfire
+          const rel = wrap(Math.atan2(b.x - me.x, -(b.z - me.z)) - heading);
+          const x = Math.max(-0.5, Math.min(0.5, rel / fov)) * w + w / 2;
+          let e = this.pings[n];
+          if (!e) { e = el("div", "ping"); this.compass.appendChild(e); this.pings.push(e); }
+          e.style.display = "";
+          e.style.left = x.toFixed(1) + "px";
+          e.style.opacity = (ra * 0.9).toFixed(2);
+          e.style.background = "transparent";
+          e.style.borderColor = hex(b.color);
+          e.classList.toggle("edge", Math.abs(rel) > fov / 2);
+          e.classList.toggle("near", d < 60);
+          e.classList.add("radar");
+          n++;
+          k++;
+        }
       }
     }
     for (let i = n; i < this.pings.length; i++) this.pings[i].style.display = "none";
@@ -339,35 +412,35 @@ export class Hud {
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
       ctx.setLineDash([]);
     }
-    // vehicles
-    for (const v of f.snap.vehicles) {
-      const [x, y] = toMini(v.x, v.z);
-      if (x < -10 || y < -10 || x > S + 10 || y > S + 10) continue;
-      ctx.fillStyle = v.kind === VehicleKind.Vespa ? "#9fd8c8" : "#c89b6a";
-      ctx.strokeStyle = "#23374b";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      if (v.kind === VehicleKind.Vespa) ctx.arc(x, y, 5, 0, TAU);
-      else ctx.ellipse(x, y, 7, 4, rot + (-v.yaw + Math.PI / 2) * -1, 0, TAU);
-      ctx.fill(); ctx.stroke();
+    // only people on the minimap: pickups and vehicles live on the big map (M)
+    // radar sweep: a ring expanding from you, then fading "last seen" blips
+    if (this.radarAge < 0.8) {
+      const t = this.radarAge / 0.8;
+      ctx.globalAlpha = (1 - t) * 0.7;
+      ctx.strokeStyle = "#fffaf0";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(S / 2, S / 2, t * S * 0.72, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
     }
-    // upgrade pickups
-    for (const p of f.snap.pickups) {
-      if (!p.active || (p.kind === PickupKind.Ammo && !p.drop)) continue;
-      const [x, y] = toMini(p.x, p.z);
-      if (x < 0 || y < 0 || x > S || y > S) continue;
-      ctx.fillStyle = UPGRADE_COLORS[p.kind];
-      ctx.strokeStyle = "#23374b";
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, 5, 0, TAU); ctx.fill(); ctx.stroke();
-    }
-    // ammo caches: tiny dots
-    for (const p of f.snap.pickups) {
-      if (!p.active || p.kind !== PickupKind.Ammo || p.drop) continue;
-      const [x, y] = toMini(p.x, p.z);
-      if (x < 0 || y < 0 || x > S || y > S) continue;
-      ctx.fillStyle = "#ff9e6b";
-      ctx.fillRect(x - 2, y - 2, 4, 4);
+    const ra = this.radarAlpha();
+    if (ra > 0) {
+      let outside = 0;
+      for (const { b } of this.radarByDistance(me.x, me.z)) {
+        if ((f.noise.get(b.id) ?? 99) <= 3) continue;
+        let [x, y] = toMini(b.x, b.z);
+        const inside = x > 8 && y > 8 && x < S - 8 && y < S - 8;
+        if (!inside) {
+          if (outside >= RADAR_NEAREST) continue;
+          outside++;
+          // pin to the rim along the bearing
+          const dx = x - S / 2, dy = y - S / 2, m = Math.max(Math.abs(dx), Math.abs(dy)) || 1;
+          x = S / 2 + (dx / m) * (S / 2 - 8);
+          y = S / 2 + (dy / m) * (S / 2 - 8);
+        }
+        ctx.globalAlpha = ra * (inside ? 1 : 0.85);
+        enemyDot(ctx, x, y, inside ? 6.5 : 5, b.color);
+      }
+      ctx.globalAlpha = 1;
     }
     // noisy players (fired recently)
     for (const p of f.snap.players) {
@@ -378,10 +451,7 @@ export class Hud {
       const a = 1 - t / 3;
       const info = f.snap.info.get(p.id);
       ctx.globalAlpha = a;
-      ctx.fillStyle = hex(info?.color ?? 0xf47b63);
-      ctx.strokeStyle = "#23374b";
-      ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(Math.max(8, Math.min(S - 8, x)), Math.max(8, Math.min(S - 8, y)), 6 + (t < 0.3 ? 3 : 0), 0, TAU); ctx.fill(); ctx.stroke();
+      enemyDot(ctx, Math.max(10, Math.min(S - 10, x)), Math.max(10, Math.min(S - 10, y)), 7 + (t < 0.3 ? 3 : 0), info?.color ?? 0xf47b63);
       ctx.globalAlpha = 1;
     }
     // me
@@ -404,6 +474,8 @@ export class Hud {
     this.timer.classList.toggle("low", tl <= 30);
     this.timer.classList.toggle("final", tl <= 10 && tl > 0);
 
+    this.radarAge += dt;
+    if (this.radarAge >= RADAR_PERIOD) this.sweepRadar(f);
     this.updateCompass(f.camYaw, me);
     this.updateCompassPings(f);
     this.miniT -= dt;
@@ -704,7 +776,7 @@ export class Hud {
     if (open) {
       this.mapPanel = el("div", "ih-panel ih-map");
       const card = el("div", "card");
-      const head = el("div", "head", `<h2>${escapeHtml(this.world.name)}</h2><span class="legend">M to close</span>`);
+      const head = el("div", "head", `<h2>${escapeHtml(this.world.name)}</h2><span class="legend"><b class="lg-foe"></b> enemies (last seen) · <b class="lg-tile"></b> pickups &amp; boats · M to close</span>`);
       const wrapEl = el("div", "wrap");
       const c = document.createElement("canvas");
       c.width = 1024; c.height = 1024;
@@ -742,17 +814,22 @@ export class Hud {
       return p;
     };
     for (const l of this.world.landmarks) pin(l.x, l.z, "lm", escapeHtml(l.name));
+    // things (not people): small square cream tiles with an icon
     for (const p of f.snap.pickups) {
       if (!p.active || p.kind === PickupKind.Ammo) continue;
-      const e = pin(p.x, p.z, "ico");
-      e.style.background = UPGRADE_COLORS[p.kind];
+      const e = pin(p.x, p.z, "tile", UPGRADE_ICONS[p.kind]);
       e.title = upgradeName(p.kind);
     }
     for (const v of f.snap.vehicles) {
-      const e = pin(v.x, v.z, "ico");
-      e.style.background = v.kind === VehicleKind.Vespa ? "#9fd8c8" : "#c89b6a";
-      e.style.borderRadius = v.kind === VehicleKind.Vespa ? "50%" : "40%";
+      const e = pin(v.x, v.z, "tile", v.kind === VehicleKind.Vespa ? VESPA_ICON : BOAT_ICON);
+      e.title = v.kind === VehicleKind.Vespa ? "Vespa" : v.kind === VehicleKind.Gondola ? "Gondola" : "Rowboat";
     }
+    const ra = this.radarAlpha();
+    if (ra > 0)
+      for (const b of this.radar) {
+        const e = pin(b.x, b.z, "foe", `<i></i>${blobSvg(hex(b.color), { size: 26 })}<span>${escapeHtml(b.name)}</span>`);
+        e.style.opacity = ra.toFixed(2);
+      }
     const me = f.me;
     if (me) {
       if (me.alive) {

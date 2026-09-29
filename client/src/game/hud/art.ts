@@ -89,6 +89,10 @@ export const UPGRADE_BLURB: Record<PickupKind, string> = {
   [PickupKind.Snorkel]: "Double breath underwater",
 };
 
+/** Map glyphs for vehicles (drawn inside a white tile on the full map). */
+export const VESPA_ICON = I(`<circle cx="6.5" cy="17" r="3" fill="#fff"/><circle cx="17.5" cy="17" r="3" fill="#fff"/><path d="M6.5 17h6l3-7h-3M15.5 10l2 7M9 12h4" /><path d="M14 6h3" />`);
+export const BOAT_ICON = I(`<path d="M3 13h18l-3 6H6z" fill="#c89b6a"/><path d="M12 13V4l6 8" /><path d="M2 21c2 0 2-1 4-1s2 1 4 1 2-1 4-1 2 1 4 1 2-1 4-1" stroke-width="1.6"/>`);
+
 export const PLAYER_ARROW = `<svg viewBox="0 0 24 24"><path d="M12 2l7 18-7-4-7 4z" fill="#f6c94c" stroke="#23374b" stroke-width="2.5" stroke-linejoin="round"/></svg>`;
 
 export function damageArcSvg(): string {

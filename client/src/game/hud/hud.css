@@ -210,6 +210,17 @@
 .ih-map .pin { position: absolute; transform: translate(-50%, -50%); }
 .ih-map .lm { font-family: var(--display); font-style: italic; font-weight: 700; font-size: 0.82em; color: var(--ink); white-space: nowrap; text-shadow: 0 0 3px #fffaf0, 0 0 3px #fffaf0, 0 0 2px #fffaf0; }
 .ih-map .me { width: 1.6em; height: 1.6em; }
+.ih-map .foe { display: flex; flex-direction: column; align-items: center; pointer-events: none; z-index: 3; }
+.ih-map .foe i { position: absolute; top: 50%; left: 50%; width: 30px; height: 30px; margin: -18px 0 0 -15px; border-radius: 50%; border: 3px solid #fffaf0; animation: foe-halo 1.4s ease-out infinite; }
+.ih-map .foe svg { display: block; filter: drop-shadow(0 0 2px #fffaf0) drop-shadow(0 0 1px #fffaf0); }
+.ih-map .foe span { position: absolute; top: 100%; font-family: var(--display); font-weight: 800; font-size: 0.72em; color: #fffaf0; background: var(--ink); padding: 0 0.45em; border-radius: 0.6em; white-space: nowrap; margin-top: 0.1em; }
+.ih-map .foe span:empty { display: none; }
+.ih-map .tile { width: 1.25em; height: 1.25em; padding: 1px; border-radius: 0.3em; background: #fffaf0; border: 2px solid var(--ink); opacity: 0.9; z-index: 1; }
+.ih-map .tile svg { width: 100%; height: 100%; display: block; }
+.ih-map .legend b { display: inline-block; vertical-align: -0.15em; width: 0.9em; height: 0.9em; border: 2px solid var(--ink); margin-right: 0.15em; }
+.ih-map .legend .lg-foe { border-radius: 50%; background: #f47b63; box-shadow: 0 0 0 2px #fffaf0; }
+.ih-map .legend .lg-tile { border-radius: 0.25em; background: #fffaf0; }
+@keyframes foe-halo { from { transform: scale(0.6); opacity: 0.9; } to { transform: scale(1.5); opacity: 0; } }
 .ih-map .ico { width: 1.1em; height: 1.1em; border-radius: 50%; border: 2px solid var(--ink); }
 .ih-map .spawn {
   pointer-events: auto; cursor: pointer; width: 3.2em; height: 3.2em; border-radius: 50% 50% 50% 0; transform: translate(-50%, -100%) rotate(-45deg);
@@ -292,3 +303,4 @@
 .ih-compass .ping { position: absolute; top: 0.05em; width: 0.7em; height: 0.7em; margin-left: -0.35em; border-radius: 50%; border: 2px solid var(--ink); box-shadow: 0 0 0 2px rgba(255, 250, 240, 0.8); }
 .ih-compass .ping.near { width: 0.95em; height: 0.95em; margin-left: -0.475em; }
 .ih-compass .ping.edge { border-radius: 30%; }
+.ih-compass .ping.radar { border-width: 3px; box-shadow: 0 0 0 1.5px var(--ink); }
