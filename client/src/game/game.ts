@@ -175,8 +175,8 @@ export class Game {
     if (this.opts.intro) {
       // swoop down from over the island, then the title card as we land
       this.rig.intro(3.2);
-      this.startTimer = setTimeout(() => this.hud.bigText(this.opts.world.name, `most splats in ${mins} minutes wins · water washes paint off`), 2300);
-    } else this.startTimer = setTimeout(() => this.hud.bigText(this.opts.world.name, `most splats in ${mins} minutes wins · water washes paint off`), 600);
+      this.startTimer = setTimeout(() => this.hud.bigText(this.opts.world.name, `most splats in ${mins} minutes wins · paint wears off · water washes it faster`), 2300);
+    } else this.startTimer = setTimeout(() => this.hud.bigText(this.opts.world.name, `most splats in ${mins} minutes wins · paint wears off · water washes it faster`), 600);
     this.lastPlace = this.hud.placeAt(this.source.me()?.x ?? 0, this.source.me()?.z ?? 0);
     this.last = performance.now();
     const loop = () => {
@@ -694,6 +694,16 @@ export class Game {
           fx.burst({ x: p.x, y: p.y + 0.9, z: p.z }, { x: 0, y: 1, z: 0 }, e.color, 0.9);
         }
         if (e.pid === local) { this.hud.toast(e.coats === 0 ? "Squeaky clean!" : "Washed off!", e.coats ? `${e.coats} coat${e.coats > 1 ? "s" : ""} left` : "All paint gone", "#c4e9e2"); sfx("wash"); }
+        break;
+      }
+      case "wear": {
+        // a coat dried and flaked off: a small puff of its color, no fanfare
+        const p = this.source.snapshot().players.find((p) => p.id === e.pid);
+        if (p) {
+          fx.burst({ x: p.x, y: p.y + 1, z: p.z }, { x: 0, y: 1, z: 0 }, e.color, 0.45);
+          fx.dust({ x: p.x, y: p.y + 0.9, z: p.z }, 3, e.color);
+        }
+        if (e.pid === local && e.coats === 0) this.hud.toast("Paint wore off", "Clean again", "#c4e9e2");
         break;
       }
       case "move": this.moveFx(e); break;

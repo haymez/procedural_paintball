@@ -10,6 +10,7 @@ export interface WorldTextures {
   ground: THREE.DataTexture; // sRGB base color, a = AO
   mask: THREE.DataTexture; // r rock, g sand, b path, a paving (village)
   normal: THREE.DataTexture; // rg normal xz, b shore/wet (unused), a holes
+  floor: THREE.DataTexture; // r jungle floor, g Mediterranean forest floor (blurred biome weights)
   normals: Float32Array; // CPU normals, 3 per sample
   ao: Float32Array;
   dispose(): void;
@@ -47,7 +48,8 @@ const BIOME_COLOR: Record<number, number> = {
   [Biome.Shallows]: WORLD_PALETTE.seabed,
   [Biome.Beach]: PALETTE.sand,
   [Biome.PalmGrove]: 0xadc163,
-  [Biome.Jungle]: 0x6c9c4a,
+  [Biome.Jungle]: 0x587c38,
+  [Biome.Forest]: 0x84704a,
   [Biome.Mangrove]: 0x71904a,
   [Biome.Meadow]: 0xa9c466,
   [Biome.Scrub]: 0xaeaa62,
@@ -133,6 +135,7 @@ export function buildWorldTextures(world: World): WorldTextures {
   // --- ground base color: biome colors blurred, moisture-tinted ---
   const cr = new Float32Array(n), cg = new Float32Array(n), cb = new Float32Array(n);
   const rock = new Float32Array(n), sand = new Float32Array(n), pave = new Float32Array(n);
+  const jf = new Float32Array(n), ff = new Float32Array(n);
   const tmp = new THREE.Color();
   const cache = new Map<number, THREE.Color>();
   for (let i = 0; i < n; i++) {
@@ -140,7 +143,16 @@ export function buildWorldTextures(world: World): WorldTextures {
     let col = cache.get(b);
     if (!col) { col = new THREE.Color(BIOME_COLOR[b] ?? PALETTE.grass); cache.set(b, col); }
     tmp.copy(col);
-    const veg = b === Biome.Jungle || b === Biome.Meadow || b === Biome.PalmGrove || b === Biome.Scrub || b === Biome.Riverbank || b === Biome.Mangrove;
+    const m0 = world.moisture[i] / 255;
+    if (b === Biome.Jungle) {
+      // dark, rich forest floor: wetter -> deeper green, drier -> browner litter
+      tmp.lerp(new THREE.Color(0x4a6a30), Math.max(0, m0 - 0.5) * 0.8);
+      tmp.lerp(new THREE.Color(0x6f6a3a), Math.max(0, 0.5 - m0) * 0.9);
+    } else if (b === Biome.Forest) {
+      // warm needle / oak-leaf duff: a touch greener where it's wetter
+      tmp.lerp(new THREE.Color(0x707a44), Math.max(0, m0 - 0.45) * 0.7);
+    }
+    const veg = b === Biome.Meadow || b === Biome.PalmGrove || b === Biome.Scrub || b === Biome.Riverbank || b === Biome.Mangrove;
     if (veg) {
       const m = world.moisture[i] / 255;
       // dry -> golden, wet -> deep lush
@@ -152,7 +164,21 @@ export function buildWorldTextures(world: World): WorldTextures {
     rock[i] = b === Biome.Rock || b === Biome.Cliff ? 1 : 0;
     sand[i] = b === Biome.Beach || b === Biome.Shallows || b === Biome.DeepOcean ? 1 : b === Biome.PalmGrove ? 0.35 : 0;
     pave[i] = b === Biome.Village ? 1 : 0;
+    jf[i] = b === Biome.Jungle ? 1 : 0;
+    ff[i] = b === Biome.Forest ? 1 : 0;
   }
+  const jfB = boxBlur(boxBlur(jf, N, 2), N, 1), ffB = boxBlur(boxBlur(ff, N, 2), N, 1);
+  const fData = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    // ramp so the floor reaches full strength a few meters inside the biome edge
+    fData[i * 4] = Math.round(Math.min(1, jfB[i] * 1.6) * 255);
+    fData[i * 4 + 1] = Math.round(Math.min(1, ffB[i] * 1.6) * 255);
+  }
+  const floor = new THREE.DataTexture(fData, N, N, THREE.RGBAFormat);
+  floor.magFilter = THREE.LinearFilter;
+  floor.minFilter = THREE.LinearMipmapLinearFilter;
+  floor.generateMipmaps = true;
+  floor.needsUpdate = true;
   const br = boxBlur(cr, N, 1), bg = boxBlur(cg, N, 1), bb = boxBlur(cb, N, 1);
   const rockB = boxBlur(rock, N, 1), sandB = boxBlur(sand, N, 1), paveB = boxBlur(pave, N, 1);
   const gData = new Uint8Array(n * 4);
@@ -182,7 +208,7 @@ export function buildWorldTextures(world: World): WorldTextures {
   mask.needsUpdate = true;
 
   return {
-    height, ground, mask, normal, normals, ao,
-    dispose() { height.dispose(); ground.dispose(); mask.dispose(); normal.dispose(); },
+    height, ground, mask, normal, floor, normals, ao,
+    dispose() { height.dispose(); ground.dispose(); mask.dispose(); normal.dispose(); floor.dispose(); },
   };
 }

@@ -11,6 +11,7 @@ const BIOME_AMB: Partial<Record<Biome, AmbienceBiome>> = {
   [Biome.Beach]: "beach",
   [Biome.PalmGrove]: "beach",
   [Biome.Jungle]: "jungle",
+  [Biome.Forest]: "jungle",
   [Biome.Mangrove]: "mangrove",
   [Biome.Meadow]: "meadow",
   [Biome.Riverbank]: "meadow",

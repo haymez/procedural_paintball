@@ -26,6 +26,7 @@ interface Env {
   wd: number; // distance to fresh water
   cl: number; // generic cluster noise 0..1 (per kind)
   open: number; // clearing factor 0..1 (0 = clearing)
+  st: number; // forest stand noise 0..1 shared by all kinds: < 0.5 oak-dominated, > 0.5 pine-dominated
 }
 
 interface Rule {
@@ -45,11 +46,24 @@ const B = Biome;
 const RULES: Rule[] = [
   // --- colliders (big first) ---
   { kind: PropKind.Boulder, sp: 15, minDist: 7, maxSlope: 1.2, scale: [0.7, 1.35], sink: 0.6,
-    p: (e) => (e.b === B.Rock ? 0.14 : e.b === B.Scrub ? 0.05 : e.b === B.Meadow ? 0.025 : e.b === B.Beach && e.c > 8 ? 0.04 : e.b === B.Jungle ? 0.02 : 0) * (0.4 + e.cl) },
-  { kind: PropKind.Broadleaf, sp: 6.5, minDist: 5.5, scale: [0.8, 1.3],
-    p: (e) => (e.b === B.Jungle ? 0.8 * e.open * (0.55 + 0.7 * e.cl) : e.b === B.Riverbank ? 0.3 : e.b === B.PalmGrove && e.m > 0.62 ? 0.1 : 0) },
+    p: (e) => (e.b === B.Rock ? 0.14 : e.b === B.Scrub ? 0.05 : e.b === B.Meadow ? 0.025 : e.b === B.Beach && e.c > 8 ? 0.04 : e.b === B.Jungle ? 0.03 : e.b === B.Forest ? 0.035 : 0) * (0.4 + e.cl) },
+  // rainforest: sparse emergent giants over a closed broadleaf canopy
+  { kind: PropKind.JungleGiant, sp: 19, minDist: 10, maxSlope: 0.6, scale: [0.85, 1.2],
+    p: (e) => (e.b === B.Jungle ? 0.42 * (0.5 + 0.5 * e.open) * (0.5 + e.cl) : e.b === B.Riverbank && e.m > 0.6 ? 0.06 : 0) },
+  { kind: PropKind.Broadleaf, sp: 4.8, minDist: 4.2, scale: [0.75, 1.3],
+    p: (e) => (e.b === B.Jungle ? 0.86 * (0.3 + 0.7 * e.open) * (0.75 + 0.35 * e.cl) : e.b === B.Riverbank ? 0.3 : e.b === B.PalmGrove && e.m > 0.62 ? 0.1 : e.b === B.Forest && e.wd < 25 ? 0.15 : 0) },
+  // Mediterranean woodland: holm oak stands and pine stands that interleave
+  { kind: PropKind.HolmOak, sp: 5.2, minDist: 4.2, scale: [0.8, 1.3],
+    p: (e) => (e.b === B.Forest ? 0.85 * (0.3 + 0.7 * e.open) * (1 - smoothstep(0.45, 0.72, e.st)) : e.b === B.Scrub ? 0.035 * e.cl : e.b === B.Meadow ? 0.02 * e.cl : 0) },
+  { kind: PropKind.Pine, sp: 6.2, minDist: 4.6, scale: [0.8, 1.25], lean: true,
+    p: (e) => {
+      if (e.b === B.Forest) return 0.72 * (0.35 + 0.65 * e.open) * smoothstep(0.35, 0.6, e.st);
+      // wind-bent pines on cliff tops and rocky coasts
+      if ((e.b === B.Scrub || e.b === B.Meadow || e.b === B.Rock || e.b === B.Beach) && e.c > 4 && e.c < 45 && e.h > 6) return 0.14 * e.cl;
+      return e.b === B.Scrub ? 0.03 : 0;
+    } },
   { kind: PropKind.UmbrellaPine, sp: 11, minDist: 7, scale: [0.8, 1.3],
-    p: (e) => (e.b === B.Meadow ? 0.3 : e.b === B.Scrub ? 0.14 : e.b === B.PalmGrove && e.c > 60 ? 0.06 : 0) * e.open * smoothstep(0.35, 0.7, e.cl) * 1.5 },
+    p: (e) => (e.b === B.Meadow ? 0.3 : e.b === B.Scrub ? 0.14 : e.b === B.PalmGrove && e.c > 60 ? 0.06 : e.b === B.Forest ? 0.2 * (1 - e.open) + 0.04 : 0) * e.open * smoothstep(0.35, 0.7, e.cl) * 1.5 },
   { kind: PropKind.Mangrove, sp: 4.5, minDist: 3.2, wet: true, scale: [0.8, 1.25], sink: 0.1,
     p: (e) => (e.b === B.Mangrove ? 0.55 : 0) },
   { kind: PropKind.Palm, sp: 6.5, minDist: 3.2, scale: [0.85, 1.25],
@@ -67,24 +81,30 @@ const RULES: Rule[] = [
   { kind: PropKind.LemonTree, sp: 5, minDist: 3, scale: [0.8, 1.15],
     p: (e) => (e.site > 3 && e.site < 40 && e.b !== B.Beach && e.b !== B.Rock ? 0.22 * (1 - e.site / 40) + 0.04 : 0) },
   { kind: PropKind.Banana, sp: 4, minDist: 2, scale: [0.8, 1.2],
-    p: (e) => (e.b === B.Jungle ? 0.18 * (0.3 + e.cl) : e.b === B.PalmGrove && e.m > 0.55 ? 0.05 : 0) },
+    p: (e) => (e.b === B.Jungle ? (0.08 + 0.2 * (1 - e.open)) * (0.3 + e.cl) : e.b === B.PalmGrove && e.m > 0.55 ? 0.05 : 0) },
+  { kind: PropKind.TreeFern, sp: 4.2, minDist: 2.4, scale: [0.75, 1.3],
+    p: (e) => (e.b === B.Jungle ? 0.26 * (0.6 + 0.6 * e.cl) : e.b === B.Riverbank && e.m > 0.55 ? 0.12 : e.b === B.Forest && e.wd < 20 ? 0.06 : 0) },
   { kind: PropKind.RockMedium, sp: 8, minDist: 3, maxSlope: 1.3, scale: [0.7, 1.4], sink: 0.35,
     p: (e) => (e.b === B.Rock ? 0.2 : e.b === B.Cliff ? 0.08 : e.b === B.Scrub ? 0.06 : e.b === B.Meadow ? 0.015 : e.b === B.Riverbank ? 0.05 : 0) },
   // --- decor ---
   { kind: PropKind.Fern, sp: 2.2, scale: [0.7, 1.3],
-    p: (e) => (e.b === B.Jungle ? 0.5 : e.b === B.Riverbank ? 0.22 : e.b === B.PalmGrove && e.m > 0.55 ? 0.07 : 0) },
+    p: (e) => (e.b === B.Jungle ? 0.5 : e.b === B.Riverbank ? 0.22 : e.b === B.PalmGrove && e.m > 0.55 ? 0.07 : e.b === B.Forest ? 0.06 + 0.1 * e.m : 0) },
+  { kind: PropKind.Understory, sp: 2.8, scale: [0.7, 1.35],
+    p: (e) => (e.b === B.Jungle ? 0.32 * (0.5 + e.cl) : e.b === B.Riverbank && e.m > 0.55 ? 0.08 : e.b === B.PalmGrove && e.m > 0.62 ? 0.03 : 0) },
+  { kind: PropKind.Log, sp: 13, maxSlope: 0.5, scale: [0.8, 1.25], sink: 0.08,
+    p: (e) => (e.b === B.Jungle ? 0.2 : e.b === B.Forest ? 0.16 : e.b === B.Riverbank ? 0.05 : 0) },
   { kind: PropKind.Bush, sp: 3.5, scale: [0.6, 1.4],
-    p: (e) => (e.b === B.Scrub ? 0.35 * (0.4 + e.cl) : e.b === B.Meadow ? 0.08 : e.b === B.Jungle ? 0.12 : e.b === B.PalmGrove ? 0.1 : e.b === B.Beach && e.c > 14 ? 0.03 : 0) },
+    p: (e) => (e.b === B.Scrub ? 0.35 * (0.4 + e.cl) : e.b === B.Meadow ? 0.08 : e.b === B.Jungle ? 0.12 : e.b === B.Forest ? 0.2 + 0.2 * (1 - e.open) : e.b === B.PalmGrove ? 0.1 : e.b === B.Beach && e.c > 14 ? 0.03 : 0) },
   { kind: PropKind.Bougainvillea, sp: 3, scale: [0.7, 1.3],
     p: (e) => (e.site > 1.2 && e.site < 8 ? 0.16 * (1 - e.site / 10) : e.b === B.Village ? 0.03 : 0) },
   { kind: PropKind.Agave, sp: 4, maxSlope: 1.2, scale: [0.6, 1.3],
     p: (e) => (e.b === B.Scrub ? 0.18 : e.b === B.Rock && e.h < 90 ? 0.05 : e.b === B.Cliff ? 0.05 : e.b === B.Beach && e.c > 12 ? 0.03 : 0) },
   { kind: PropKind.GrassTuft, sp: 2.2, scale: [0.6, 1.4],
-    p: (e) => (e.b === B.Meadow ? 0.35 : e.b === B.PalmGrove ? 0.2 : e.b === B.Scrub ? 0.14 : e.b === B.Riverbank ? 0.25 : e.b === B.Village ? 0.04 : e.b === B.Jungle ? 0.05 : 0) },
+    p: (e) => (e.b === B.Meadow ? 0.35 : e.b === B.PalmGrove ? 0.2 : e.b === B.Scrub ? 0.14 : e.b === B.Riverbank ? 0.25 : e.b === B.Village ? 0.04 : e.b === B.Jungle ? 0.03 : e.b === B.Forest ? 0.12 * (1 - e.open * 0.6) : 0) },
   { kind: PropKind.Flowers, sp: 3, scale: [0.6, 1.3],
-    p: (e) => (e.b === B.Meadow ? 0.45 * smoothstep(0.55, 0.85, e.cl) + 0.02 : e.b === B.Village ? 0.08 : e.site < 20 ? 0.06 : 0) },
+    p: (e) => (e.b === B.Meadow ? 0.45 * smoothstep(0.55, 0.85, e.cl) + 0.02 : e.b === B.Village ? 0.08 : e.site < 20 ? 0.06 : e.b === B.Forest ? 0.05 * (1 - e.open) : 0) },
   { kind: PropKind.RockSmall, sp: 4, maxSlope: 1.4, scale: [0.5, 1.5], sink: 0.1,
-    p: (e) => (e.b === B.Rock ? 0.25 : e.b === B.Cliff ? 0.15 : e.b === B.Scrub ? 0.08 : e.b === B.Riverbank ? 0.08 : e.b === B.Beach ? 0.02 : e.b === B.Meadow ? 0.02 : 0) },
+    p: (e) => (e.b === B.Rock ? 0.25 : e.b === B.Cliff ? 0.15 : e.b === B.Scrub ? 0.08 : e.b === B.Riverbank ? 0.08 : e.b === B.Beach ? 0.02 : e.b === B.Meadow ? 0.02 : e.b === B.Forest ? 0.05 : e.b === B.Jungle ? 0.02 : 0) },
   { kind: PropKind.Driftwood, sp: 9, scale: [0.7, 1.3],
     p: (e) => (e.b === B.Beach && e.c < 12 ? 0.09 : 0) },
   { kind: PropKind.Reed, sp: 1.8, wet: true, scale: [0.7, 1.3],
@@ -103,6 +123,7 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
   const pathD = edt(pm, N, N);
   const noise = new Noise(rng.fork("clusters"));
   const clearN = new Noise(rng.fork("clearings"));
+  const standN = new Noise(rng.fork("stands"));
   const trunk = new Uint8Array(NN); // collider occupancy
   // land bbox
   let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
@@ -116,7 +137,7 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
         if (z > z1) z1 = z;
       }
     }
-  const e: Env = { i: 0, x: 0, z: 0, h: 0, b: 0, m: 0, c: 0, s: 0, site: 0, path: 0, wd: 0, cl: 0, open: 1 };
+  const e: Env = { i: 0, x: 0, z: 0, h: 0, b: 0, m: 0, c: 0, s: 0, site: 0, path: 0, wd: 0, cl: 0, open: 1, st: 0.5 };
   const out: PropSet[] = [];
 
   for (let r = 0; r < RULES.length; r++) {
@@ -158,6 +179,7 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
         e.wd = ctx.waterDist[i];
         e.cl = 0.5 + 0.5 * noise.fbm(x / 55 + off, z / 55 - off, 2);
         e.open = smoothstep(-0.45, 0.05, clearN.fbm(x / 90, z / 90, 2));
+        e.st = 0.5 + 0.5 * standN.fbm(x / 70, z / 70, 2);
         const p = rule.p(e);
         if (p <= 0 || roll >= p) continue;
         if (collider) {

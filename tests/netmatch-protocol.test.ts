@@ -166,6 +166,7 @@ const sampleEvents: SimEvent[] = [
   { type: "zipStart", pid: 3, zip: 1 },
   { type: "zipEnd", pid: 3, zip: -1 },
   { type: "wash", pid: 3, coats: 1, color: 0xff6b6b },
+  { type: "wear", pid: 3, coats: 0, color: 0x6bff6b },
   { type: "move", pid: 3, fx: 1 | 64, x: 1, y: 2, z: 3, speed: 8.25 },
   { type: "reload", pid: 3 },
   { type: "matchEnd" },
@@ -215,6 +216,7 @@ describe("snapshot", () => {
     expect(hit.coats).toBe(2);
     expect((got.events[8] as Extract<NetEvent, { type: "elim" }>).killer).toBe(-1);
     expect((got.events[19] as Extract<NetEvent, { type: "wash" }>).color).toBe(0xff6b6b);
+    expect((got.events[20] as Extract<NetEvent, { type: "wear" }>).color).toBe(0x6bff6b);
     expect(EV_TYPES.length).toBeLessThan(256);
   });
 

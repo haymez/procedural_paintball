@@ -4,6 +4,73 @@
 import * as THREE from "three";
 import { ENV_PARS, NOISE_FNS, STYLE_LIGHT_PARS, WIND_FN } from "./glsl";
 import { worldRamp } from "./style";
+import { WORLD_HALF, WORLD_SIZE } from "../../../shared/world/types";
+
+/**
+ * Canopy shade (env uniforms uCanopy / uCanopyP, map built in props/canopy.ts):
+ * under dense crowns the sky is hidden and the sun only gets through in
+ * flecks. Real shadow maps already cut direct sun near the camera, so the cut
+ * here is partial there and full past the shadow distance; the ambient
+ * darkening/cooling is what makes a forest feel like a forest.
+ */
+const CANOPY_PARS = /* glsl */ `
+uniform sampler2D uCanopy;
+uniform vec4 uCanopyP;
+vec2 canopyUV(vec2 xz) { return (xz + ${WORLD_HALF.toFixed(1)}) / ${WORLD_SIZE.toFixed(1)}; }
+`;
+const CANOPY_LIGHT = /* glsl */ `
+if (uCanopyP.x > 0.0) {
+  vec4 C0 = texture2D(uCanopy, canopyUV(vWPos.xz));
+  float over = C0.g - vWPos.y;
+  float below = (1.0 - smoothstep(C0.g, C0.b, vWPos.y)) * (1.0 - smoothstep(25.0, 45.0, over));
+  if (below > 0.0 && C0.r + C0.a > 0.004) {
+    vec2 off = uSunDir.xz / max(uSunDir.y, 0.3) * clamp(over, 0.0, 14.0);
+    float cov = texture2D(uCanopy, canopyUV(vWPos.xz + off)).r * below;
+    float reg = C0.a * below;
+    vec2 fp = (vWPos.xz + off) * 0.21 + uWind * sin(uTime * 0.6) * 0.25;
+    float fl = smoothstep(0.6, 0.7, noiseT(fp).r * 0.6 + noiseT(fp * 2.3 + 0.37).b * 0.4);
+    float farK = smoothstep(uCanopyP.y * 0.6, uCanopyP.y, length(vWPos - cameraPosition));
+    float sunCut = clamp(cov * mix(0.6, 0.94, farK) * (1.0 - fl * 0.9) * uCanopyP.x, 0.0, 1.0);
+    reflectedLight.directDiffuse *= 1.0 - sunCut;
+    reflectedLight.directSpecular *= 1.0 - sunCut;
+    float amb = clamp((cov * 0.45 + reg * 0.55) * uCanopyP.x, 0.0, 1.0);
+    reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.6, 0.7, 0.6), amb);
+    reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.02, 0.05, 0.025) * amb;
+  }
+}
+`;
+
+/**
+ * Canopy shade for materials that don't go through makeStyledMaterial (e.g.
+ * actors on a plain MeshToonMaterial): call once after creating the material.
+ * Needs the world's env uniforms (they carry uCanopy); chains any existing onBeforeCompile.
+ */
+export function applyCanopyShade(m: THREE.Material, env: Record<string, THREE.IUniform>): void {
+  if (!("uCanopy" in env)) return;
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = (shader, r) => {
+    prev?.call(m, shader, r);
+    shader.uniforms.uCanopy = env.uCanopy;
+    shader.uniforms.uCanopyP = env.uCanopyP;
+    shader.uniforms.uSunDir = env.uSunDir;
+    shader.uniforms.uWind = env.uWind;
+    shader.uniforms.uTime = env.uTime;
+    shader.uniforms.uNoise = env.uNoise;
+    let vs = shader.vertexShader, fs = shader.fragmentShader;
+    if (!/varying vec3 vWPos;/.test(vs)) {
+      vs = vs.replace("#include <common>", "#include <common>\nvarying vec3 vWPos;");
+      vs = vs.replace(/}\s*$/, "  #ifdef USE_INSTANCING\n  vWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;\n  #else\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  #endif\n}");
+      fs = fs.replace("#include <common>", `#include <common>\nvarying vec3 vWPos;\nuniform float uTime; uniform vec3 uSunDir; uniform vec2 uWind; uniform sampler2D uNoise;\n${NOISE_FNS}`);
+    }
+    fs = fs.replace("#include <common>", `#include <common>\n${CANOPY_PARS}`);
+    fs = fs.replace("#include <opaque_fragment>", `{\n${CANOPY_LIGHT}\noutgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + reflectedLight.indirectSpecular + totalEmissiveRadiance;\n}\n#include <opaque_fragment>`);
+    shader.vertexShader = vs;
+    shader.fragmentShader = fs;
+  };
+  m.customProgramCacheKey = () => (prevKey ? prevKey.call(m) : "") + "+canopy";
+  m.needsUpdate = true;
+}
 
 export interface PatchHooks {
   key: string;
@@ -55,6 +122,7 @@ export function makeStyledMaterial(env: Record<string, THREE.IUniform>, hooks: P
 
 export function applyPatch(m: THREE.Material, env: Record<string, THREE.IUniform>, hooks: PatchHooks): void {
   if (hooks.defines) m.defines = { ...(m.defines ?? {}), ...hooks.defines };
+  const canopy = "uCanopy" in env;
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, env, hooks.uniforms ?? {});
     let vs = shader.vertexShader;
@@ -69,19 +137,19 @@ export function applyPatch(m: THREE.Material, env: Record<string, THREE.IUniform
     vs = vs.replace(/}\s*$/, `  #ifdef USE_INSTANCING\n  vWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;\n  #else\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  #endif\n${hooks.vertexEnd ?? ""}\n}`);
     fs = fs.replace(
       "#include <common>",
-      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\nvarying vec3 vWPos;\n${hooks.fragPars ?? ""}`,
+      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\nvarying vec3 vWPos;\n${canopy ? CANOPY_PARS : ""}\n${hooks.fragPars ?? ""}`,
     );
     fs = fs.replace("#include <lights_toon_pars_fragment>", STYLE_LIGHT_PARS);
     fs = fs.replace("#include <color_fragment>", `#include <color_fragment>\n${hooks.fragColor ?? ""}`);
     fs = fs.replace("#include <normal_fragment_begin>", `#include <normal_fragment_begin>\n${hooks.fragNormal ?? ""}`);
     fs = fs.replace(
       "vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;",
-      `${hooks.fragLight ?? ""}\nvec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + totalEmissiveRadiance;\n${hooks.fragOutput ?? ""}`,
+      `${canopy ? CANOPY_LIGHT : ""}\n${hooks.fragLight ?? ""}\nvec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + totalEmissiveRadiance;\n${hooks.fragOutput ?? ""}`,
     );
     shader.vertexShader = vs;
     shader.fragmentShader = fs;
   };
-  m.customProgramCacheKey = () => hooks.key;
+  m.customProgramCacheKey = () => hooks.key + (canopy ? "+c" : "");
 }
 
 /** Depth material for shadow casting that runs the same vertex transform. */

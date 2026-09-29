@@ -52,12 +52,6 @@ export const JUMP_BUFFER = 0.15;
 /** Horizontal boost for jumping out of a slide (keeps the speed fantasy alive). */
 export const SLIDE_JUMP_KEEP = 1.0;
 
-export const STAMINA_DRAIN = 1 / 5.5;
-export const STAMINA_REGEN = 1 / 3.2;
-export const STAMINA_DELAY = 0.7;
-/** After running dry, sprint unlocks again at this stamina. */
-export const STAMINA_UNLOCK = 0.3;
-
 // slide (sprint + crouch, or landing a belly-flop)
 export const SLIDE_MIN_SPEED = 4.5;
 export const SLIDE_BOOST = 11;
@@ -145,6 +139,10 @@ export const SCOPE_ZOOM = 3.4;
 
 // ---------------------------------------------------------------- paint = health
 export const MAX_COATS = 3;
+/** Paint wears off on its own: after this long without a new hit… */
+export const PAINT_WEAR_DELAY = 5;
+/** …one coat (most recent first) flakes off every this many seconds until clean. Water (WASH_TIME) is faster. */
+export const PAINT_WEAR_TIME = 4;
 export const SPAWN_SHIELD = 2;
 export const RESPAWN_DELAY = 3;
 /** Auto-pick a spawn this long after elimination. */
@@ -178,6 +176,24 @@ export const VESPA_MAX_SLOPE = 0.72;
 /** The Vespa refuses water deeper than this. */
 export const VESPA_MAX_WADE = 0.5;
 export const VESPA_BOUNCE = 0.32;
+/** Ledges / kinks up to this high (above the scooter's ground) are driven over whatever the slope. */
+export const VESPA_STEP = 0.4;
+/** Body clearance kept from trunks, rocks and walls (front probe radius). */
+export const VESPA_BODY_R = 0.32;
+/**
+ * Hitting something: cos of the angle between travel and the obstacle's
+ * normal. Above this it's head-on and the scooter bounces back; below it
+ * slides along the obstacle and keeps most of its speed.
+ */
+export const VESPA_HEADON = 0.93;
+/** Head-on hits bounce back at this fraction of the speed. */
+export const VESPA_REBOUND = 0.3;
+/** ...and swing the nose this far (rad) off the obstacle so the next try glances past it. */
+export const VESPA_HEADON_NUDGE = 0.45;
+/** Glancing hits keep 1 - SCRAPE·cos² of the speed (a 30° graze keeps ~88%). */
+export const VESPA_SCRAPE = 0.5;
+/** How fast the nose swings round to follow the obstacle it's sliding along (rad/s). */
+export const VESPA_DEFLECT_TURN = 6;
 export const VEHICLE_ABANDON = 90;
 
 // ---------------------------------------------------------------- ziplines

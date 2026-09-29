@@ -31,15 +31,16 @@ const glslColor = (hex: number) => {
 
 export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THREE.IUniform>) {
   return {
-    key: "terrain-v1",
+    key: "terrain-v2",
     uniforms: {
       tGround: { value: tex.ground },
+      tFloor: { value: tex.floor },
       tMask: { value: tex.mask },
       tNrm: { value: tex.normal },
       ...paint,
     },
     fragPars: /* glsl */ `
-      uniform sampler2D tGround, tMask, tNrm;
+      uniform sampler2D tGround, tMask, tNrm, tFloor;
       ${PAINT_SAMPLE_GLSL}
       ${GRID_UV_GLSL}
       vec3 gN;
@@ -74,6 +75,11 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
       base *= 0.88 + 0.24 * nB.r;
       base = mix(base, base * vec3(1.1, 1.03, 0.82), smoothstep(0.55, 0.85, nA.a) * 0.5);
 
+      // forest floors (jungle leaf litter / Mediterranean needle duff) replace the grass look
+      vec2 FL = texture2D(tFloor, guv).rg;
+      float floorF = max(FL.r, FL.g);
+      float grassF = 1.0 - floorF;
+
       // --- grass / vegetated ground ---
       vec3 col = base;
       float clump = mix(0.5, nE.b, fine);
@@ -84,16 +90,48 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
       // blade streaks + tiny meadow flowers close to the camera
       if (fine > 0.0) {
         float blades = noiseT(p * vec2(3.1, 0.9) + nD.r).b;
-        col *= 1.0 + (blades - 0.5) * 0.22 * fine;
+        col *= 1.0 + (blades - 0.5) * 0.22 * fine * grassF;
         vec2 fc = floor(p * 2.3);
         float fh = hash12(fc);
         vec2 fo = fract(p * 2.3) - 0.5 - (hash22(fc) - 0.5) * 0.6;
         float dotF = smoothstep(0.13, 0.07, length(fo)) * step(0.965, fh) * smoothstep(0.55, 0.75, nB.a) * fine;
         vec3 fcol = mix(vec3(1.0, 0.95, 0.85), vec3(1.0, 0.8, 0.2), step(0.985, fh));
-        col = mix(col, fcol, dotF * (1.0 - M.g));
+        col = mix(col, fcol, dotF * (1.0 - M.g) * grassF);
       }
       // darker, cooler grass in shady hollows
       col = mix(col, col * vec3(0.8, 0.95, 0.9), (1.0 - ao) * 0.8);
+
+      if (floorF > 0.004) {
+        // leaf shapes: jittered cells warped by noise, dark gaps between them
+        vec2 q = p + (nD.rg - 0.5) * 0.9;
+        vec2 lc = floor(q * 3.6);
+        float h1 = hash12(lc), h2 = hash12(lc + 7.31), h3 = hash12(lc + 3.17);
+        vec2 lf = fract(q * 3.6) - 0.5 - (vec2(h2, h3) - 0.5) * 0.3;
+        float ang = h1 * 6.2832;
+        lf = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * lf;
+        float leaf = smoothstep(0.42, 0.3, length(lf * vec2(1.0, 1.9)));
+        float leafFar = 0.45;
+        float leafK = mix(leafFar, leaf, fine);
+        float mossP = smoothstep(0.45, 0.7, nC.r * 0.7 + nD.a * 0.3);
+        // jungle: dark rich floor, brown / olive / rust leaves, mossy patches
+        vec3 jl = mix(${glslColor(0x6b4d2c)}, ${glslColor(0x4e5c26)}, h2);
+        jl = mix(jl, ${glslColor(0x8a4f22)}, step(0.86, h3));
+        vec3 jc = col * 0.86;
+        jc = mix(jc, jl, leafK * 0.55 * (1.0 - mossP * 0.6));
+        jc = mix(jc, ${glslColor(0x3f6a2c)}, mossP * 0.45);
+        jc *= 0.92 + 0.16 * nE.b * fine;
+        // Mediterranean forest: warm needle hatching, oak-leaf litter, sparse dry-grass patches
+        vec2 rp2 = mat2(0.8, -0.6, 0.6, 0.8) * p;
+        float needles = noiseT(rp2 * vec2(2.6, 0.35)).b * 0.5 + noiseT(p * vec2(0.4, 2.9) + 0.3).b * 0.5;
+        vec3 fc = col * (0.9 + (needles - 0.5) * 0.5 * mix(0.3, 1.0, fine));
+        vec3 fl2 = mix(${glslColor(0x7a5634)}, ${glslColor(0xa07c4a)}, h2);
+        fc = mix(fc, fl2, leafK * 0.4 * step(0.35, h3));
+        float dry = smoothstep(0.58, 0.72, nC.r * 0.6 + nB.a * 0.4);
+        float dblades = noiseT(p * vec2(3.1, 0.9) + nD.r).b;
+        fc = mix(fc, ${glslColor(0xae9c56)} * (0.85 + 0.3 * dblades * fine), dry * 0.6);
+        vec3 fcol = mix(jc, fc, FL.g / max(FL.r + FL.g, 1e-3));
+        col = mix(col, fcol, floorF);
+      }
 
       // --- sand: ripples + speckle ---
       float sandW = smoothstep(0.25, 0.75, M.g + (nD.r - 0.5) * 0.45);

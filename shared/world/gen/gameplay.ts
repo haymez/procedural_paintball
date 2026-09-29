@@ -81,7 +81,7 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     const i = cand[bk];
     const x = gx(i % N) + srng.range(-1, 1), z = gx((i / N) | 0) + srng.range(-1, 1);
     const y = sample(h, x, z);
-    if (!clear(x, y, z, 0.8) || caveSdf(world, x, y + 1, z) < 0.5) {
+    if (!clear(x, y, z, 0.8) || sdf(cw, x, y + 2.9, z) < 1.8 || caveSdf(world, x, y + 1, z) < 0.5) {
       n--;
       minD[bk] = 0;
       continue;
@@ -234,6 +234,18 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     }
   }
   boatRoute(ctx, cw, vrng);
+  // gondolas (and the odd rowboat) moored at the cove jetties
+  for (const j of ctx.sites) {
+    if (j.kind !== "jetty") continue;
+    const end = j.spots.find((s) => s.tag === "dockEnd");
+    if (!end) continue;
+    const ax = end.x - j.x, az = end.z - j.z;
+    const L = Math.sqrt(ax * ax + az * az) || 1;
+    const px = -az / L, pz = ax / L;
+    const side = vrng.chance(0.5) ? 1 : -1;
+    const b1 = waterSpot(ctx, cw, end.x + px * 2.4 * side, end.z + pz * 2.4 * side);
+    if (b1) ctx.vehicles.push({ kind: vrng.chance(0.75) ? VehicleKind.Gondola : VehicleKind.Rowboat, x: b1.x, y: 0, z: b1.z, rotY: atan2(ax, az) + vrng.range(-0.25, 0.25) });
+  }
   // Vespas: at the shed, then on paths far apart
   const shed = ctx.sites.find((s) => s.kind === "shed");
   const vespas: P2[] = [];
@@ -376,6 +388,19 @@ function ziplines(ctx: Ctx, cw: CollisionWorld, rng: Rng): void {
     if (sdf(cw, x, g + 0.95, z) < 0.35 || sdf(cw, x, g + 1.5, z) < 0.35) return NaN;
     return g;
   };
+  // The handle must be reachable from a standing spot within 1.5 m on a coarse
+  // ring (what players and bots actually probe), not only from the exact spot;
+  // trees near cliff tops can otherwise crowd the ring.
+  const grabbable = (ax: number, ay: number, az: number): boolean => {
+    for (let r = 0; r <= 1.5; r += 0.5)
+      for (let k = 0; k < (r === 0 ? 1 : 8); k++) {
+        const x = ax + sin(k * 0.785) * r, z = az + cos(k * 0.785) * r;
+        const g = groundBelow(cw, x, ay, z);
+        const dy = ay - g;
+        if (dy >= 2.2 && dy <= 2.6 && sdf(cw, x, g + 1, z) > 0.3 && sdf(cw, x, g + 1.5, z) > 0.3) return true;
+      }
+    return false;
+  };
   // Launch points: a standable spot at the brink of a drop (cliff top, ridge
   // shoulder) so the hanging rider clears the ground as the cable dips away.
   // The handle hangs 1.4 m out from the standing spot (0.9 m past the lip), ZIP_GRAB above it.
@@ -418,6 +443,7 @@ function ziplines(ctx: Ctx, cw: CollisionWorld, rng: Rng): void {
       if (!ctx.reach[bi] || ctx.slope[bi] > 0.7 || ctx.blocked[bi] & (BLOCK_STRUCT | BLOCK_CAVE)) continue;
       const g = standAt(sx0, best.g + 1, sz0);
       if (g !== g) continue;
+      if (!grabbable(sx0 + sin(best.dir) * 1.4, g + ZIP_GRAB, sz0 + cos(best.dir) * 1.4)) continue;
       starts.push({
         x: sx0 + sin(best.dir) * 1.4, y: g + ZIP_GRAB, z: sz0 + cos(best.dir) * 1.4, dir: best.dir,
         p: h[i] / 30 + best.drop / 10 + rng.next() * 2,

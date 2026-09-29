@@ -5,7 +5,7 @@ import { Noise } from "../../math/noise";
 import type { Rng } from "../../math/rng";
 import { clamp01, smoothstep } from "../../math/vec";
 import type { Ctx } from "../context";
-import { gx, N, NN, sample, slopeGrid } from "../grid";
+import { boxBlur, gx, N, NN, sample, slopeGrid } from "../grid";
 import { Biome, NO_WATER } from "../types";
 import { up4, H4 } from "./elevation";
 import { BLOCK_VILLAGE } from "./sites";
@@ -39,6 +39,15 @@ export function biomesStage(ctx: Ctx, rng: Rng): void {
   let peakH = 0;
   for (let i = 0; i < NN; i++) if (h[i] > peakH) peakH = h[i];
   const rockLine = Math.max(70, peakH * 0.74);
+  const ch = ctx.ch;
+  // Forests grow in big contiguous stands: low-frequency patch noise, favoured
+  // in valleys and gullies (sheltered, wetter) and thinned on exposed ridges.
+  const fn = new Noise(rng.fork("forestNoise"));
+  const wn = new Noise(rng.fork("woodlandNoise"));
+  const hc = new Float32Array(NN);
+  for (let i = 0; i < NN; i++) hc[i] = h[i] > 0 ? h[i] : 0;
+  const hBlur = boxBlur(hc, N, N, 14);
+  const treeLine = Math.max(55, rockLine * 0.92);
 
   for (let iz = 0; iz < N; iz++)
     for (let ix = 0; ix < N; ix++) {
@@ -50,7 +59,7 @@ export function biomesStage(ctx: Ctx, rng: Rng): void {
       // moisture
       const nz = noise.fbm(x / 140, z / 140, 3);
       let m = 0.46 + 0.4 * (1 - smoothstep(0, 110, wd)) + 0.12 * (1 - smoothstep(0, 180, c)) - 0.5 * up4(shadow, ix, iz) + 0.28 * nz - Math.max(0, hv - 60) * 0.004;
-      m = clamp01(m);
+      m = clamp01(m + ch.moisture);
       ctx.moisture[i] = Math.round(m * 255);
 
       // biome
@@ -74,10 +83,13 @@ export function biomesStage(ctx: Ctx, rng: Rng): void {
         b = Biome.Riverbank;
       } else if (hv > rockLine + 14 * bnz || s > 0.92 + 0.1 * bnz) {
         b = Biome.Rock;
-      } else if (c < 55 + 25 * bnz && hv < 16 && m > 0.3) {
+      } else if (c < (40 + 22 * bnz) * ch.palms && hv < 16 && m > 0.3) {
         b = Biome.PalmGrove;
-      } else if (m > 0.56 + 0.08 * bnz && hv < 100) {
-        b = Biome.Jungle;
+      } else if (isForest(x, z, hv, m, bnz, hBlur[i] - hv)) {
+        // rainforest in the warm wet lowlands, holm oak / pine woodland above
+        // (or everywhere on Mediterranean and dry islands)
+        const w = 0.5 + 0.5 * wn.fbm(x / 260, z / 260, 2);
+        b = hv < ch.jungleTop + 14 * bnz && (w > ch.woodland || wd < 18) ? Biome.Jungle : Biome.Forest;
       } else if (m < 0.3 + 0.06 * bnz || (hv > rockLine * 0.75 && m < 0.42)) {
         b = Biome.Scrub;
       } else {
@@ -85,4 +97,12 @@ export function biomesStage(ctx: Ctx, rng: Rng): void {
       }
       ctx.biome[i] = b;
     }
+
+  function isForest(x: number, z: number, hv: number, m: number, bnz: number, valley: number): boolean {
+    if (hv > treeLine + 12 * bnz) return false;
+    const patch = fn.fbm(x / 210, z / 210, 3);
+    const v = valley > 0 ? Math.min(valley * 0.025, 0.14) : Math.max(valley * 0.02, -0.12);
+    const score = m + ch.forest + 0.2 * patch + v + 0.04 * bnz - smoothstep(treeLine * 0.6, treeLine, hv) * 0.12;
+    return score > 0.6;
+  }
 }

@@ -811,6 +811,7 @@ export class NetClient {
       case "vehicleExit":
       case "zipEnd":
       case "wash":
+      case "wear":
         this.push(e, tick, e.pid === me ? C_NOW : C_RENDER, e.pid === me);
         return;
       case "move":

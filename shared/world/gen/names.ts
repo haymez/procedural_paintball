@@ -82,7 +82,12 @@ export function namesStage(ctx: Ctx, rng: Rng): void {
     const hub = c.nodes[0];
     add(uniq(() => (grotto ? "Grotta " + rng.pick(["Azzurra", "Marina", "delle Sirene", "del Mostro Marino", "Smeralda"]) : "Grotta " + tail())), hub.x, hub.z, "cave");
   }
+  for (const cv of ctx.coves) {
+    if (L.some((l) => (l.kind === "cove" || l.kind === "bay") && (l.x - cv.x) * (l.x - cv.x) + (l.z - cv.z) * (l.z - cv.z) < 70 * 70)) continue;
+    add(uniq(() => "Cala " + tail()), cv.x + cv.dx * cv.len * 0.4, cv.z + cv.dz * cv.len * 0.4, "cove");
+  }
   for (const s of ctx.sites) {
+    if (s.kind === "jetty") continue;
     let nm = "";
     let kind: Landmark["kind"] = "ruin";
     switch (s.kind) {

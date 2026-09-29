@@ -14,6 +14,7 @@ export function ambienceBiome(b: Biome): AmbienceBiome {
       return "beach";
     case Biome.PalmGrove:
     case Biome.Jungle:
+    case Biome.Forest:
     case Biome.Riverbank:
       return "jungle";
     case Biome.Mangrove:

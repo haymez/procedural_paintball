@@ -2,7 +2,7 @@
 import "./hud.css";
 import { PickupKind, VehicleKind, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
 import {
-  Move, MAX_COATS, RELOAD_TIME, hopperCap, hasUpgrade, upgradeName, type PlayerState, type SimSnapshot,
+  Move, MAX_COATS, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, RELOAD_TIME, hopperCap, hasUpgrade, upgradeName, type PlayerState, type SimSnapshot,
 } from "../../../../shared/sim/index";
 import {
   damageArcSvg, emptySlotSvg, hex, hitMarkerSvg, PLAYER_ARROW, splatSvg, UPGRADE_BLURB, UPGRADE_COLORS, UPGRADE_ICONS,
@@ -63,9 +63,6 @@ export class Hud {
   private dmgI = 0;
   private breath: El;
   private breathDots: El[] = [];
-  private stam: El;
-  private stamFill: El;
-  private stamVisT = 0;
   // top
   private timer: El;
   private compass: El;
@@ -142,11 +139,7 @@ export class Hud {
     }
     this.breath = el("div", "ih-breath hidden");
     for (let i = 0; i < 8; i++) { const b = el("b"); this.breath.appendChild(b); this.breathDots.push(b); }
-    this.stam = el("div", "ih-stam");
-    this.stamFill = el("i");
-    this.stam.appendChild(this.stamFill);
-    this.stam.style.opacity = "0";
-    this.root.append(this.dmg, this.cross, this.hitmark, this.breath, this.stam);
+    this.root.append(this.dmg, this.cross, this.hitmark, this.breath);
 
     // top center
     const top = el("div", "ih-top");
@@ -442,12 +435,6 @@ export class Hud {
       }
       this.water.classList.toggle("on", me.move === Move.Underwater || me.gasp > 0);
       this.water.classList.toggle("gasp", me.gasp > 0);
-      // stamina
-      if (me.stamina < 0.999) this.stamVisT = 1.2;
-      else this.stamVisT -= dt;
-      this.stam.style.opacity = this.stamVisT > 0 && alive ? "1" : "0";
-      this.stamFill.style.width = (me.stamina * 100).toFixed(1) + "%";
-      this.stam.classList.toggle("ex", me.exhausted);
 
       // score
       const sc = String(me.score);
@@ -545,6 +532,12 @@ export class Hud {
       }
     }
     this.lastCoats = c.slice();
+    // the top coat fades as it dries and is about to flake off
+    const wear = c.length ? Math.max(0, Math.min(1, (me.paintT - PAINT_WEAR_DELAY) / PAINT_WEAR_TIME)) : 0;
+    for (let i = 0; i < MAX_COATS; i++) {
+      const o = i === c.length - 1 && wear > 0 ? (1 - 0.6 * wear).toFixed(2) : "";
+      if (this.coatSlots[i].style.opacity !== o) this.coatSlots[i].style.opacity = o;
+    }
     this.coatsEl.classList.toggle("danger", c.length >= MAX_COATS - 1);
     this.vignette.classList.toggle("on", c.length >= MAX_COATS - 1 && me.alive);
     if (c.length) this.vignette.style.setProperty("--vc", hex(c[c.length - 1]) + "88");

@@ -7,7 +7,7 @@ import { NO_WATER, type GenerateOptions, type World } from "./types";
 import { coastStage } from "./gen/coast";
 import { composeCoarse, composeFine, inlandFields } from "./gen/elevation";
 import { dropletErosion, streamPower, terraceStage, thermal } from "./gen/erosion";
-import { seaStacks } from "./gen/coast";
+import { coveBeds, seaStacks } from "./gen/coast";
 import { hydrologyStage } from "./gen/hydrology";
 import { cavesStage } from "./gen/caves";
 import { sitesStage } from "./gen/sites";
@@ -18,6 +18,7 @@ import { propsStage } from "./gen/props";
 import { gameplayStage } from "./gen/gameplay";
 import { namesStage } from "./gen/names";
 import { cos, sin, TAU } from "../math/trig";
+import { pickCharacter } from "./gen/character";
 
 export const STAGES = [
   "coast", "elevation", "erosion", "hydrology", "caves", "sites", "paths", "traps", "biomes", "props", "gameplay", "names",
@@ -25,7 +26,7 @@ export const STAGES = [
 
 function newCtx(seed: number, skipDecor: boolean): Ctx {
   return {
-    seed, rng: new Rng(seed), skipDecor, archetype: "volcano", peaks: [], ridges: [], cx: 0, cz: 0,
+    seed, rng: new Rng(seed), skipDecor, archetype: "volcano", ch: pickCharacter(new Rng(seed).fork("character")), peaks: [], ridges: [], cx: 0, cz: 0,
     windDir: 0, windX: 0, windZ: 1,
     height: new Float32Array(NN), land: new Uint8Array(NN), coast: new Float32Array(NN),
     cliff: new Float32Array(NN), shelter: new Float32Array(NN), slope: new Float32Array(NN),
@@ -34,7 +35,7 @@ function newCtx(seed: number, skipDecor: boolean): Ctx {
     accum: new Float32Array(NN), waterDist: new Float32Array(NN), blocked: new Uint8Array(NN), reach: new Uint8Array(NN),
     rivers: [], waterfalls: [], lakes: [], lakeCells: [], caves: [], paths: [], structures: [], sites: [], props: [],
     landmarks: [], pickups: [], vehicles: [], ziplines: [], spawns: [], name: "", usedNames: new Set(),
-    bays: [], headlands: [], islets: [], stacks: [],
+    bays: [], headlands: [], islets: [], stacks: [], coves: [],
   };
 }
 
@@ -65,6 +66,7 @@ export function generateWorld(seed: number, opts: GenerateOptions = {}): World {
   dropletErosion(ctx, xrng.fork("drops"), 30000);
   thermal(ctx, 6, 1.1, 0.4);
   terraceStage(ctx, xrng.fork("terraces"));
+  coveBeds(ctx);
   seaStacks(ctx, root.fork("coast").fork("stacks"));
 
   progress("hydrology");
@@ -97,6 +99,7 @@ export function generateWorld(seed: number, opts: GenerateOptions = {}): World {
   opts.onProgress?.("done", 1);
   return {
     seed, name: ctx.name, timeOfDay, windDir: ctx.windDir, archetype: ctx.archetype,
+    climate: ctx.ch.climate, coastStyle: ctx.ch.coastStyle,
     height: ctx.height, water: ctx.water, flow: ctx.flow, biome: ctx.biome, moisture: ctx.moisture,
     path: ctx.path, holes: ctx.holes, rivers: ctx.rivers, waterfalls: ctx.waterfalls, lakes: ctx.lakes,
     caves: ctx.caves, paths: ctx.paths, structures: ctx.structures, props: ctx.props, landmarks: ctx.landmarks,

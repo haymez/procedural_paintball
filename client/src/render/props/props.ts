@@ -5,35 +5,44 @@
 // drawn into the sun shadow map (onBeforeShadow trims instanceCount).
 // Wind sway, per-instance tint and distance shrink happen in the vertex shader.
 import * as THREE from "three";
-import { PROP_STRIDE, PropKind, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
+import { Biome, GRID_RES, PROP_STRIDE, PropKind, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
 import { makeDepthMaterial, makeStyledMaterial, type PatchHooks } from "../patch";
 import { propModels } from "./models";
 import { groundCover } from "./decor";
+import { buildCanopyTexture } from "./canopy";
 
-export interface PropsOptions { density: number; distance: number; shadowDistance: number; groundCover?: number }
+export interface PropsOptions { density: number; distance: number; shadowDistance: number; groundCover?: number; /** canopy shade strength (default 1, 0 = off) */ canopyShade?: number }
 
-interface KindCfg { maxDist: number; lodDist: number; shadow: boolean; thin: boolean; lod2?: number }
+/** stretch: per-instance vertical scale variation (± fraction) so stands of one tree kind vary in height */
+/** biome: recolor foliage by the biome underneath (ground plants shared across biomes) */
+interface KindCfg { maxDist: number; lodDist: number; shadow: boolean; thin: boolean; lod2?: number; stretch?: number; biome?: boolean }
 const CFG: Record<PropKind, KindCfg> = {
   [PropKind.Palm]: { maxDist: 900, lodDist: 98, shadow: true, thin: false, lod2: 190 },
   [PropKind.PalmLeaning]: { maxDist: 900, lodDist: 98, shadow: true, thin: false, lod2: 190 },
-  [PropKind.Broadleaf]: { maxDist: 900, lodDist: 80, shadow: true, thin: false, lod2: 190 },
+  [PropKind.Broadleaf]: { maxDist: 900, lodDist: 58, shadow: true, thin: false, lod2: 150, stretch: 0.14 },
   [PropKind.UmbrellaPine]: { maxDist: 900, lodDist: 112, shadow: true, thin: false, lod2: 220 },
   [PropKind.Cypress]: { maxDist: 900, lodDist: 105, shadow: true, thin: false, lod2: 220 },
   [PropKind.Olive]: { maxDist: 550, lodDist: 70, shadow: true, thin: false, lod2: 150 },
   [PropKind.LemonTree]: { maxDist: 400, lodDist: 49, shadow: true, thin: false, lod2: 120 },
   [PropKind.Mangrove]: { maxDist: 550, lodDist: 70, shadow: true, thin: false, lod2: 150 },
   [PropKind.Banana]: { maxDist: 280, lodDist: 42, shadow: true, thin: false, lod2: 110 },
-  [PropKind.Bush]: { maxDist: 360, lodDist: 30, shadow: true, thin: true, lod2: 80 },
+  [PropKind.Bush]: { maxDist: 360, lodDist: 30, shadow: true, thin: true, lod2: 80, biome: true },
   [PropKind.Bougainvillea]: { maxDist: 300, lodDist: 42, shadow: true, thin: false, lod2: 100 },
-  [PropKind.Fern]: { maxDist: 100, lodDist: 18, shadow: false, thin: true },
+  [PropKind.Fern]: { maxDist: 78, lodDist: 18, shadow: false, thin: true, lod2: 36, biome: true },
   [PropKind.Agave]: { maxDist: 170, lodDist: 31, shadow: true, thin: true },
-  [PropKind.GrassTuft]: { maxDist: 44, lodDist: 11, shadow: false, thin: true },
+  [PropKind.GrassTuft]: { maxDist: 44, lodDist: 11, shadow: false, thin: true, biome: true },
   [PropKind.Flowers]: { maxDist: 65, lodDist: 17, shadow: false, thin: true },
   [PropKind.RockSmall]: { maxDist: 120, lodDist: 28, shadow: false, thin: true },
   [PropKind.RockMedium]: { maxDist: 420, lodDist: 62, shadow: true, thin: false },
   [PropKind.Boulder]: { maxDist: 900, lodDist: 105, shadow: true, thin: false },
   [PropKind.Driftwood]: { maxDist: 160, lodDist: 35, shadow: true, thin: true },
   [PropKind.Reed]: { maxDist: 120, lodDist: 28, shadow: false, thin: true },
+  [PropKind.JungleGiant]: { maxDist: 1100, lodDist: 105, shadow: true, thin: false, lod2: 260, stretch: 0.1 },
+  [PropKind.TreeFern]: { maxDist: 300, lodDist: 38, shadow: true, thin: false, lod2: 110, stretch: 0.14 },
+  [PropKind.HolmOak]: { maxDist: 800, lodDist: 64, shadow: true, thin: false, lod2: 170, stretch: 0.08 },
+  [PropKind.Pine]: { maxDist: 900, lodDist: 84, shadow: true, thin: false, lod2: 210, stretch: 0.12 },
+  [PropKind.Understory]: { maxDist: 80, lodDist: 20, shadow: false, thin: true, lod2: 38 },
+  [PropKind.Log]: { maxDist: 150, lodDist: 32, shadow: true, thin: true, lod2: 80 },
 };
 
 const CELL = 64;
@@ -41,6 +50,26 @@ const NC = WORLD_SIZE / CELL;
 const IF = 8; // floats per instance: x y z rot | scale var phase seed
 
 const FLOWER_TINTS = [0xfff6e8, 0xffe14a, 0xff5f86, 0xb884ff, 0xff8a3c, 0xff4f5a];
+
+/** 256^2 biome weights for tinting shared ground plants: r jungle, g forest, b scrub. */
+function buildBiomeTint(world: World): THREE.DataTexture {
+  const R = 256, step = (GRID_RES - 1) / R;
+  const data = new Uint8Array(R * R * 4);
+  for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+    let jn = 0, fo = 0, sc = 0, n = 0;
+    for (let dz = 0; dz < step; dz++) for (let dx = 0; dx < step; dx++) {
+      const b = world.biome[(Math.floor(j * step) + dz) * GRID_RES + Math.floor(i * step) + dx];
+      jn += b === Biome.Jungle ? 1 : 0; fo += b === Biome.Forest ? 1 : 0; sc += b === Biome.Scrub ? 1 : 0; n++;
+    }
+    const o = (j * R + i) * 4;
+    data[o] = (jn / n) * 255; data[o + 1] = (fo / n) * 255; data[o + 2] = (sc / n) * 255; data[o + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, R, R, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 function hooks(key: string): PatchHooks {
   return {
@@ -51,6 +80,7 @@ function hooks(key: string): PatchHooks {
       attribute vec4 iB; // scale, colorVar, phase, seed
       attribute vec3 wind;
       uniform vec2 uFade; // start, end distance
+      uniform float uStretch;
       varying vec3 vVar;
       varying float vLeaf;
       varying float vTint;
@@ -67,6 +97,7 @@ function hooks(key: string): PatchHooks {
         float d = length(iA.xz - cameraPosition.xz);
         float shrink = 1.0 - smoothstep(uFade.x, uFade.y, d);
         vec3 p = transformed * iB.x * shrink;
+        p.y *= 1.0 + iB.y * uStretch;
         p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
         p += windOffset(iA.xyz, wind.x, wind.y, iB.z, iB.x);
         transformed = iA.xyz + p;
@@ -80,6 +111,8 @@ function hooks(key: string): PatchHooks {
     fragPars: /* glsl */ `
       varying vec3 vVar; varying float vLeaf; varying float vTint;
       uniform vec3 uTints[6];
+      uniform float uBiomeTint;
+      uniform sampler2D tBiome; // r jungle, g Mediterranean forest, b scrub
       uniform vec4 uFocus;
       // dithered see-through for leafy parts near the lens or between the lens and the player
       float foliageFade(vec3 p) {
@@ -112,6 +145,15 @@ function hooks(key: string): PatchHooks {
         c = mix(c, c * vec3(1.08, 1.04, 0.82), max(v, 0.0) * 0.5); // some instances sunnier/yellower
         c = mix(c, c * vec3(0.9, 1.0, 1.06), max(-v, 0.0) * 0.4);
         if (vTint > 0.5) c = uTints[int(floor(vVar.y * 5.999))];
+        if (uBiomeTint > 0.5 && vLeaf > 0.1) {
+          vec3 bw = texture2D(tBiome, (vWPos.xz + ${WORLD_HALF.toFixed(1)}) / ${WORLD_SIZE.toFixed(1)}).rgb;
+          float l = dot(c, vec3(0.3, 0.59, 0.11));
+          // Mediterranean woodland / scrub: dusty grey-olive maquis, sun-dried grass
+          vec3 olive = mix(vec3(l), c, 0.55) * vec3(1.0, 0.96, 0.66);
+          c = mix(c, olive, clamp(bw.g + bw.b * 0.6, 0.0, 1.0));
+          // jungle: deeper, cooler green
+          c = mix(c, c * vec3(0.78, 0.95, 0.84), bw.r);
+        }
         diffuseColor.rgb = c;
         gTransl = diffuseColor.rgb * vLeaf * 1.2;
       }
@@ -159,6 +201,18 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
     l.push(ps.data.subarray(0, ps.count * PROP_STRIDE));
     byKind.set(ps.kind, l);
   }
+  // canopy-cover map from the generator's trees: shades everything under dense crowns
+  const tc0 = performance.now();
+  const canopyTex = buildCanopyTexture(world.props);
+  const canopyMs = performance.now() - tc0;
+  if (env.uCanopy && env.uCanopyP) {
+    env.uCanopy.value = canopyTex;
+    (env.uCanopyP.value as THREE.Vector4).set(opts.canopyShade ?? 1, opts.shadowDistance, 0, 0);
+    group.userData.canopyP = env.uCanopyP; // debug handle (tools: strength in .value.x)
+    // what patch.applyCanopyShade needs, for materials built outside the world renderer (actors)
+    group.userData.canopyEnv = { uCanopy: env.uCanopy, uCanopyP: env.uCanopyP, uSunDir: env.uSunDir, uWind: env.uWind, uTime: env.uTime, uNoise: env.uNoise };
+  }
+  const biomeTex = buildBiomeTint(world);
   const merged = [...byKind.entries()].map(([kind, parts]) => {
     const n = parts.reduce((a, p) => a + p.length, 0);
     const data = new Float32Array(n);
@@ -207,7 +261,7 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
       const fade = { value: lod === 0 ? new THREE.Vector2(1e5, 1e5 + 1) : new THREE.Vector2(cfg.maxDist * 0.8, cfg.maxDist) };
       void 0;
       const hk = hooks("k");
-      hk.uniforms = { uFade: fade, uTints: { value: tints } };
+      hk.uniforms = { uFade: fade, uTints: { value: tints }, uStretch: { value: cfg.stretch ?? 0 }, uBiomeTint: { value: cfg.biome ? 1 : 0 }, tBiome: { value: biomeTex } };
       const mat = makeStyledMaterial(env, hk, { vertexColors: true, side: THREE.DoubleSide });
       const dmat = makeDepthMaterial(env, hk);
       mats.push(mat, dmat);
@@ -361,7 +415,7 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
       }
     },
     debugInfo(): Record<string, number> {
-      return { propInstances: totalDrawn, propKinds: batches.length };
+      return { propInstances: totalDrawn, propKinds: batches.length, canopyMs: Math.round(canopyMs) };
     },
     /** triangles submitted per kind in the main pass (lod0, lod1) */
     breakdown(): Record<string, [number, number, number]> {
@@ -375,6 +429,8 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
     dispose() {
       for (const b of batches) { for (const m of b.lod) m.geometry.dispose(); b.proxy?.geometry.dispose(); }
       mats.forEach((m) => m.dispose());
+      canopyTex.dispose();
+      biomeTex.dispose();
     },
   };
 }

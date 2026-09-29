@@ -43,7 +43,8 @@ export function inlandFields(ctx: Ctx, rng: Rng): InlandFields {
   const ridgeScale = rng.range(130, 190);
   const ridgeAmt = rng.range(0.18, 0.3);
   const hillAmt = rng.range(6, 13);
-  const plateau = ctx.archetype === "spine" || rng.chance(0.25) ? rng.range(70, 110) : 1e9;
+  const plateau = Math.min(ctx.ch.plateau, ctx.archetype === "spine" || rng.chance(0.25) ? rng.range(70, 110) * ctx.ch.relief : 1e9);
+  const [ct0, ct1] = ctx.ch.cliffTop;
   const rot = rng.range(0, TAU);
   const rc = cos(rot), rs = sin(rot);
 
@@ -109,7 +110,7 @@ export function inlandFields(ctx: Ctx, rng: Rng): InlandFields {
 
       const hv = hn.fbm(x / 260, z / 260, 4) * 0.8 + 0.25 + 0.35 * hn.fbm(x / 90 + 3.1, z / 90, 3);
       hills[i] = hv > 0 ? hv * hillAmt : hv * 2;
-      cliffTop[i] = 10 + 22 * (0.5 + 0.5 * cn.fbm(x / 160, z / 160, 3));
+      cliffTop[i] = ct0 + (ct1 - ct0) * (0.5 + 0.5 * cn.fbm(x / 160, z / 160, 3));
       reef[i] = cn.fbm(x / 110 + 40, z / 110, 3);
     }
   }

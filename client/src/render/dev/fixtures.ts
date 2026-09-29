@@ -520,7 +520,7 @@ export function addFixtures(world: World, mode: "full" | "fill" = "full"): Fixtu
     else if (nearRiver && h > 1) b = Biome.Riverbank;
     else if (h < 7) b = m > 0.7 && h < 3.5 ? Biome.Mangrove : Biome.PalmGrove;
     else if (h < 26) b = m > 0.42 ? Biome.Jungle : Biome.Meadow;
-    else if (h < 44) b = m > 0.5 ? Biome.Meadow : Biome.Scrub;
+    else if (h < 44) b = m > 0.5 ? Biome.Meadow : m > 0.34 ? Biome.Forest : Biome.Scrub;
     else if (h < 56) b = Biome.Scrub;
     else b = Biome.Rock;
     world.biome[k] = b;
@@ -543,7 +543,8 @@ export function addFixtures(world: World, mode: "full" | "fill" = "full"): Fixtu
   const R: Partial<Record<Biome, Rule[]>> = {
     [Biome.Beach]: [[PropKind.PalmLeaning, 0.006, 0.8, 1.2], [PropKind.Driftwood, 0.003, 0.8, 1.3], [PropKind.RockSmall, 0.004, 0.6, 1.3], [PropKind.GrassTuft, 0.01, 0.7, 1.1]],
     [Biome.PalmGrove]: [[PropKind.Palm, 0.03, 0.8, 1.25], [PropKind.PalmLeaning, 0.012, 0.8, 1.2], [PropKind.Bush, 0.03, 0.7, 1.3], [PropKind.GrassTuft, 0.25, 0.7, 1.3], [PropKind.Fern, 0.02, 0.7, 1.2], [PropKind.Banana, 0.012, 0.8, 1.2], [PropKind.Flowers, 0.04, 0.8, 1.2], [PropKind.Bougainvillea, 0.004, 0.8, 1.2]],
-    [Biome.Jungle]: [[PropKind.Broadleaf, 0.022, 0.8, 1.3], [PropKind.Banana, 0.03, 0.8, 1.3], [PropKind.Fern, 0.14, 0.7, 1.4], [PropKind.Bush, 0.05, 0.8, 1.4], [PropKind.Palm, 0.012, 0.9, 1.3], [PropKind.GrassTuft, 0.1, 0.8, 1.3], [PropKind.RockMedium, 0.003, 0.7, 1.2], [PropKind.Boulder, 0.0015, 0.7, 1.1], [PropKind.Flowers, 0.02, 0.8, 1.2]],
+    [Biome.Jungle]: [[PropKind.JungleGiant, 0.0025, 0.85, 1.15], [PropKind.TreeFern, 0.02, 0.8, 1.2], [PropKind.Understory, 0.04, 0.8, 1.3], [PropKind.Log, 0.004, 0.8, 1.2], [PropKind.Broadleaf, 0.03, 0.8, 1.3], [PropKind.Banana, 0.03, 0.8, 1.3], [PropKind.Fern, 0.14, 0.7, 1.4], [PropKind.Bush, 0.05, 0.8, 1.4], [PropKind.Palm, 0.012, 0.9, 1.3], [PropKind.GrassTuft, 0.1, 0.8, 1.3], [PropKind.RockMedium, 0.003, 0.7, 1.2], [PropKind.Boulder, 0.0015, 0.7, 1.1], [PropKind.Flowers, 0.02, 0.8, 1.2]],
+    [Biome.Forest]: [[PropKind.HolmOak, 0.03, 0.8, 1.25], [PropKind.Pine, 0.012, 0.85, 1.2], [PropKind.UmbrellaPine, 0.003, 0.9, 1.2], [PropKind.Bush, 0.04, 0.7, 1.3], [PropKind.Log, 0.004, 0.8, 1.2], [PropKind.RockMedium, 0.004, 0.7, 1.2], [PropKind.GrassTuft, 0.08, 0.6, 1.0]],
     [Biome.Meadow]: [[PropKind.UmbrellaPine, 0.005, 0.8, 1.2], [PropKind.Olive, 0.01, 0.8, 1.2], [PropKind.Cypress, 0.004, 0.8, 1.2], [PropKind.GrassTuft, 0.4, 0.7, 1.3], [PropKind.Flowers, 0.1, 0.8, 1.3], [PropKind.Bush, 0.02, 0.7, 1.2], [PropKind.RockSmall, 0.01, 0.6, 1.3], [PropKind.Agave, 0.003, 0.8, 1.2], [PropKind.LemonTree, 0.002, 0.8, 1.1]],
     [Biome.Scrub]: [[PropKind.Agave, 0.02, 0.7, 1.3], [PropKind.Bush, 0.05, 0.6, 1.2], [PropKind.Olive, 0.008, 0.7, 1.1], [PropKind.GrassTuft, 0.18, 0.6, 1.1], [PropKind.RockSmall, 0.03, 0.6, 1.4], [PropKind.RockMedium, 0.01, 0.6, 1.2], [PropKind.Cypress, 0.004, 0.8, 1.2], [PropKind.UmbrellaPine, 0.002, 0.8, 1.1]],
     [Biome.Rock]: [[PropKind.RockMedium, 0.012, 0.6, 1.3], [PropKind.Boulder, 0.005, 0.6, 1.2], [PropKind.Agave, 0.004, 0.7, 1.1], [PropKind.RockSmall, 0.02, 0.6, 1.4]],

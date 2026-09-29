@@ -192,7 +192,7 @@ export class MatchSim {
       if (p.shield > 0) p.shield -= dt;
       if (pressed & Btn.Interact) this.interact(p);
       this.stepWeapon(p, cmd, pressed, dt);
-      this.stepWash(p, dt);
+      this.stepPaint(p, dt);
       if (p.y < -80) this.respawn(p, this.pickSpawns(p.id)[0]);
     }
 
@@ -299,7 +299,7 @@ export class MatchSim {
     p.upgrades = 0;
     p.hopper = C.HOPPER; p.reserve = C.RESERVE_START; p.reload = 0; p.fireCd = 0.3;
     p.shield = C.SPAWN_SHIELD;
-    p.breath = 1; p.gasp = 0; p.wash = 0; p.stamina = 1; p.exhausted = false; p.stumble = 0;
+    p.breath = 1; p.gasp = 0; p.wash = 0; p.paintT = 0; p.stamina = 1; p.exhausted = false; p.stumble = 0;
     p.deadT = 0; p.spawnChoices.length = 0; p.spawnPick = -1;
     p.zip = -1; p.vehicle = -1; p.seat = -1;
     // face the island centre-ish so you don't spawn staring at a wall of sea
@@ -364,12 +364,19 @@ export class MatchSim {
     return best || this.world.name;
   }
 
-  // ---------------------------------------------------------------- washing
-  private stepWash(p: PlayerState, dt: number): void {
-    if (p.move !== Move.Underwater || p.coats.length === 0) {
-      if (p.coats.length === 0) p.wash = 0;
-      return;
+  // ---------------------------------------------------------------- paint wear + washing
+  private stepPaint(p: PlayerState, dt: number): void {
+    if (p.coats.length === 0) { p.wash = 0; p.paintT = 0; return; }
+    // wears off by itself: PAINT_WEAR_DELAY after the last hit, then a coat every PAINT_WEAR_TIME
+    p.paintT += dt;
+    if (p.paintT >= C.PAINT_WEAR_DELAY + C.PAINT_WEAR_TIME) {
+      const color = p.coats.pop()!;
+      p.coatBy.pop();
+      p.paintT = p.coats.length ? C.PAINT_WEAR_DELAY : 0;
+      this.events.push({ type: "wear", pid: p.id, coats: p.coats.length, color });
+      if (p.coats.length === 0) { p.wash = 0; return; }
     }
+    if (p.move !== Move.Underwater) return;
     // fully submerged: head under the surface
     if (p.y + 1.1 > p.waterY) return;
     p.wash += dt;
@@ -516,6 +523,7 @@ export class MatchSim {
     }
     t.coats.push(b.color);
     t.coatBy.push(b.owner);
+    t.paintT = 0;
     t.lastHitBy = b.owner;
     if (t.move !== Move.Vehicle && t.move !== Move.Zipline && t.move !== Move.Mantle) {
       t.vx += dx * C.HIT_KNOCKBACK; t.vz += dz * C.HIT_KNOCKBACK;
@@ -707,7 +715,7 @@ export class MatchSim {
     }
     p.x = x; p.y = yy; p.z = z; p.vx = 0; p.vy = 0; p.vz = 0;
     p.move = Move.Air; p.moveT = 0; p.grounded = false;
-    if (!p.alive) { p.alive = true; p.coats.length = 0; p.coatBy.length = 0; }
+    if (!p.alive) { p.alive = true; p.coats.length = 0; p.coatBy.length = 0; p.paintT = 0; }
   }
 
   giveUpgrade(id: number, kind: PickupKind): void {

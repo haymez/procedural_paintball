@@ -28,6 +28,7 @@ export const BIOME_INFO: { biome: Biome; name: string; color: number }[] = [
   { biome: Biome.Cliff, name: "Cliff", color: 0x9a8574 },
   { biome: Biome.Riverbank, name: "Riverbank", color: 0x86b95c },
   { biome: Biome.Village, name: "Village", color: 0xdcbf94 },
+  { biome: Biome.Forest, name: "Forest", color: 0x5e7a3a },
 ];
 const BIOME_RGB: RGB[] = [];
 for (const b of BIOME_INFO) BIOME_RGB[b.biome] = rgb(b.color);
@@ -41,7 +42,7 @@ const C_FRESH_DEEP = rgb(0x2a73b8);
 const C_DIRT = rgb(0xc49a6c);
 const C_HOLE = rgb(0x2a2124);
 const C_ELEV = rgb(0xf4eee0);
-const VEGETATED = new Set<number>([Biome.PalmGrove, Biome.Jungle, Biome.Mangrove, Biome.Meadow, Biome.Scrub, Biome.Riverbank]);
+const VEGETATED = new Set<number>([Biome.PalmGrove, Biome.Jungle, Biome.Mangrove, Biome.Meadow, Biome.Scrub, Biome.Riverbank, Biome.Forest]);
 
 export const MATERIAL_COLOR: Record<Material, number> = {
   [Material.Stucco]: 0xffffff,

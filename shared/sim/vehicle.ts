@@ -1,8 +1,8 @@
 // Vehicle physics: boats float on flat water and can't touch land; the Vespa
 // follows the ground on two wheel probes, launches off crests, bounces on
 // landing and refuses cliffs and deep water. stepVehicle is pure w.r.t. `v`.
-import { atan, cos, sin } from "../math/trig";
-import { terrainHeight } from "../world/collide";
+import { atan, atan2, cos, sin, wrapAngle } from "../math/trig";
+import { sdfNormal, terrainHeight, terrainNormal, type Vec3 } from "../world/collide";
 import { VehicleKind, WORLD_HALF, type VehicleSpawn } from "../world/types";
 import * as C from "./constants";
 import { BLOCKED, NO_WATER_Y, dist, probeGround, waterAt, type SimEnv } from "./env";
@@ -129,6 +129,65 @@ function groundAt(env: SimEnv, x: number, yRef: number, z: number): number {
   return g;
 }
 
+const _n: Vec3 = { x: 0, y: 1, z: 0 };
+/** Horizontal normal of the last thing vespaBlocked() ran into (points out of it). */
+const _hn = { x: 0, z: 0 };
+
+/** Horizontal part of the SDF normal at a point into _hn; false if it's (nearly) flat. */
+function hNormal(env: SimEnv, x: number, y: number, z: number): boolean {
+  const n = sdfNormal(env.cw, x, y, z, _n);
+  const l = Math.sqrt(n.x * n.x + n.z * n.z);
+  if (l < 0.2) return false;
+  _hn.x = n.x / l; _hn.z = n.z / l;
+  return true;
+}
+
+/**
+ * Would the scooter centred at (x, z), travelling along (ux, uz), hit
+ * something? Checks the leading wheel (inside a solid, too steep a climb,
+ * too deep water) and the body just ahead of it (trunks, rocks, walls — the
+ * body is probed ~0.75 m above the ground there, so terrain slopes and small
+ * bumps never count as walls). Sets _hn to the obstacle's horizontal normal;
+ * without a usable one it's treated as head-on.
+ */
+function vespaBlocked(env: SimEnv, v: VehicleState, x: number, z: number, ux: number, uz: number): boolean {
+  const hl = HULL[VehicleKind.Vespa].hl;
+  const lx = x + ux * hl, lz = z + uz * hl;
+  const gl = groundAt(env, lx, v.y, lz);
+  _hn.x = -ux; _hn.z = -uz;
+  if (gl === BLOCKED) {
+    hNormal(env, lx, v.y + 1.4, lz);
+    return true;
+  }
+  if (gl !== -Infinity) {
+    let wall = false;
+    if (v.airborne) wall = gl > v.y + 0.6;
+    else if (gl - v.y > C.VESPA_STEP) {
+      const gt = groundAt(env, x - ux * hl, v.y, z - uz * hl);
+      if (gt !== -Infinity && gt !== BLOCKED && (gl - gt) / (2 * hl) > C.VESPA_MAX_SLOPE) wall = true;
+    }
+    if (wall) {
+      hNormal(env, lx, Math.min(gl, v.y + 0.3), lz);
+      return true;
+    }
+    const W = waterAt(env, lx, lz);
+    if (W !== NO_WATER_Y && W - gl > C.VESPA_MAX_WADE) {
+      // the shore is uphill: slide along it
+      const n = terrainNormal(env.world, lx, lz, _n);
+      const l = Math.sqrt(n.x * n.x + n.z * n.z);
+      if (l > 0.05) { _hn.x = -n.x / l; _hn.z = -n.z / l; }
+      return true;
+    }
+  }
+  const bx = lx + ux * 0.25, bz = lz + uz * 0.25;
+  const by = (gl !== -Infinity && gl > v.y - 1 ? gl : v.y) + 0.75;
+  if (dist(env, bx, by, bz) < C.VESPA_BODY_R) {
+    hNormal(env, bx, by, bz);
+    return true;
+  }
+  return false;
+}
+
 function stepVespa(v: VehicleState, throttle: number, dt: number, env: SimEnv): number {
   let bump = 0;
   if (!v.airborne) {
@@ -146,36 +205,56 @@ function stepVespa(v: VehicleState, throttle: number, dt: number, env: SimEnv): 
   }
   const spK = clamp(Math.abs(v.speed) / 4, 0, 1) * (1 - 0.35 * clamp(Math.abs(v.speed) / C.VESPA_SPEED, 0, 1));
   const yawRate = v.steer * C.VESPA_TURN * spK * (v.speed >= 0 ? 1 : -1) * (v.airborne ? 0.3 : 1);
-  const nyaw = v.yaw + yawRate * dt;
-  const fx = sin(nyaw), fz = cos(nyaw);
-  const nx = v.x + fx * v.speed * dt, nz = v.z + fz * v.speed * dt;
-  const hl = HULL[VehicleKind.Vespa].hl;
+  v.yaw += yawRate * dt;
   const dir = v.speed >= 0 ? 1 : -1;
-  const lx = nx + fx * hl * dir, lz = nz + fz * hl * dir;
-  const tx = nx - fx * hl * dir, tz = nz - fz * hl * dir;
-  const gl = groundAt(env, lx, v.y, lz);
-  const gt = groundAt(env, tx, v.y, tz);
-  let blocked = false;
-  if (Math.abs(v.speed) > 0.05) {
-    if (gl === BLOCKED) blocked = true;
-    else if (gl !== -Infinity && gt !== -Infinity && gt !== BLOCKED) {
-      const rise = (gl - gt) / (2 * hl);
-      if (!v.airborne && rise > C.VESPA_MAX_SLOPE) blocked = true;
-      if (v.airborne && gl > v.y + 0.6) blocked = true;
+  // travel direction (backwards when reversing)
+  const ux = sin(v.yaw) * dir, uz = cos(v.yaw) * dir;
+  let nx = v.x + ux * Math.abs(v.speed) * dt, nz = v.z + uz * Math.abs(v.speed) * dt;
+  if (Math.abs(v.speed) > 0.05 && vespaBlocked(env, v, nx, nz, ux, uz)) {
+    // how head-on: 1 = straight into it, 0 = skimming along it
+    let c = -(ux * _hn.x + uz * _hn.z);
+    const sp = Math.abs(v.speed);
+   
+    if (c > C.VESPA_HEADON) {
+      v.speed = -v.speed * C.VESPA_REBOUND;
+      // glance off to whichever side we were already favouring so the next try slides past
+      v.yaw += (ux * _hn.z - uz * _hn.x >= 0 ? -1 : 1) * dir * C.VESPA_HEADON_NUDGE;
+      return sp > 1.5 ? sp : 0;
     }
-    if (!blocked && gl !== -Infinity) {
-      const W = waterAt(env, lx, lz);
-      if (W !== NO_WATER_Y && W - gl > C.VESPA_MAX_WADE) blocked = true;
+    if (c < 0.05) c = 0.05;
+    // glancing: slide along the obstacle, keep most of the speed, swing the nose round
+    let tx = ux + c * _hn.x, tz = uz + c * _hn.z;
+    const tl = Math.sqrt(tx * tx + tz * tz) || 1;
+    tx /= tl; tz /= tl;
+    v.speed *= 1 - C.VESPA_SCRAPE * c * c;
+    const turn = wrapAngle(atan2(tx * dir, tz * dir) - v.yaw);
+    const maxTurn = C.VESPA_DEFLECT_TURN * dt;
+    v.yaw += clamp(turn, -maxTurn, maxTurn);
+    bump = sp * c > 3 ? sp * c : 0;
+    const hx = _hn.x, hz = _hn.z;
+    nx = v.x + tx * Math.abs(v.speed) * dt;
+    nz = v.z + tz * Math.abs(v.speed) * dt;
+    // wedged (a second obstacle along the slide): hold still and lose speed
+    if (vespaBlocked(env, v, nx, nz, tx, tz) && -(tx * _hn.x + tz * _hn.z) > 0.2) {
+      nx = v.x + hx * 0.02; nz = v.z + hz * 0.02;
+      v.speed = -v.speed * C.VESPA_REBOUND;
     }
-    if (!blocked && dist(env, lx + fx * 0.25 * dir, v.y + 0.75, lz + fz * 0.25 * dir) < 0.32) blocked = true;
   }
-  if (blocked) {
-    bump = Math.abs(v.speed);
-    v.speed = -v.speed * 0.3;
-    v.yaw = nyaw;
-    return bump > 1.5 ? bump : 0;
+  v.x = nx; v.z = nz;
+  // never rest inside a trunk / wall: push the body out horizontally
+  {
+    const d = dist(env, v.x, v.y + 0.75, v.z);
+    if (d < C.VESPA_BODY_R - 0.02 && env.cw.lastKind !== "terrain") {
+      const n = sdfNormal(env.cw, v.x, v.y + 0.75, v.z, _n);
+      const hl = Math.sqrt(n.x * n.x + n.z * n.z);
+      if (hl > 0.3) {
+        const push = Math.min(0.15, C.VESPA_BODY_R - d);
+        v.x += (n.x / hl) * push; v.z += (n.z / hl) * push;
+      }
+    }
   }
-  v.x = nx; v.z = nz; v.yaw = nyaw;
+  const fx = sin(v.yaw), fz = cos(v.yaw);
+  const hl = HULL[VehicleKind.Vespa].hl;
   // ground height under both wheels (front = +z)
   const gf = groundAt(env, v.x + fx * hl, v.y, v.z + fz * hl);
   const gr = groundAt(env, v.x - fx * hl, v.y, v.z - fz * hl);

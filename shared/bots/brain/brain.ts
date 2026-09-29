@@ -45,6 +45,8 @@ interface Contact {
 const NEVER = -1e9;
 const PERC_EVERY = 6; // sim steps (10 Hz)
 const SOLVE_EVERY = 3; // aim solution refresh (20 Hz)
+/** Paint wears off anyway: only detour to water this close (m) to wash. */
+const WASH_NEAR = 40;
 
 const _from = { x: 0, y: 0, z: 0 };
 const _to = { x: 0, y: 0, z: 0 };
@@ -498,12 +500,12 @@ export class BotBrain implements BotController {
     const inWater = p.move === Move.Swim || p.move === Move.Underwater;
 
     // ---- utilities
+    // paint wears off by itself, so water is only worth a detour one hit from
+    // elimination and with deep water close by
     let uWash = 0;
-    if (coats >= 2) {
+    if (coats >= 2 && (inWater || this.washNear(sim, p, WASH_NEAR))) {
       uWash = 0.82 + 0.2 * P.caution;
       if (tVis && tp && tp.coats.length >= 2 && tD < 25) uWash -= 0.45 * P.aggression; // go for the trade
-    } else if (coats === 1 && !tVis && !underFire) {
-      uWash = (0.15 + 0.4 * P.caution) * S.tactics;
     }
     if (cur === St.Wash && coats > 0) uWash += inWater ? 0.5 : 0.15;
     const uAmmo = ammo < 6 ? 1.05 : p.reserve < 12 ? 0.6 : p.reserve < 35 && !tVis ? 0.3 : 0;
@@ -645,6 +647,17 @@ export class BotBrain implements BotController {
     const g = probeGround(sim.env, p.x, p.y + 0.3, p.z, 12);
     const floor = g === BLOCKED || g === -Infinity ? p.y - 12 : g;
     return p.waterY - floor > 1.7;
+  }
+
+  /** Any (usable) wash spot within r meters? */
+  private washNear(sim: MatchSim, p: PlayerState, r: number): boolean {
+    const hub = this.hub!, g = hub.bw.nav;
+    for (const q of hub.washSpots) {
+      if (this.badWash.includes(q)) continue;
+      const dx = g.x[q] - p.x, dz = g.z[q] - p.z, dy = g.y[q] - p.y;
+      if (dx * dx + dz * dz + dy * dy * 9 < r * r) return true;
+    }
+    return false;
   }
 
   private pickWash(sim: MatchSim, p: PlayerState, threat: Contact | null): number {

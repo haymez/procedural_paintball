@@ -30,6 +30,7 @@ export enum Biome {
   Cliff = 9, // steep faces (also assigned by slope)
   Riverbank = 10,
   Village = 11, // paved / packed earth around ruins
+  Forest = 12, // Mediterranean woodland: holm oak and pine, shady needle/leaf-litter floor
 }
 
 export enum PropKind {
@@ -53,6 +54,12 @@ export enum PropKind {
   Reed = 17,
   Mangrove = 18,
   LemonTree = 19,
+  JungleGiant = 20, // emergent rainforest tree (kapok/fig): buttresses, high umbrella crown, lianas
+  TreeFern = 21, // slender scaly trunk with a crown of arching fronds
+  HolmOak = 22, // dense dark evergreen oak, the Mediterranean forest tree
+  Pine = 23, // tall Aleppo pine: leaning trunk, tiered irregular crown
+  Understory = 24, // big-leaf forest-floor plant (monstera / elephant ear / philodendron)
+  Log = 25, // fallen mossy log (decor, walk over)
 }
 
 /**
@@ -82,6 +89,12 @@ export const PROP_COLLIDER_RADIUS: Record<PropKind, number> = {
   [PropKind.Reed]: 0,
   [PropKind.Mangrove]: 0.6,
   [PropKind.LemonTree]: 0.3,
+  [PropKind.JungleGiant]: 1.2,
+  [PropKind.TreeFern]: 0.2,
+  [PropKind.HolmOak]: 0.45,
+  [PropKind.Pine]: 0.35,
+  [PropKind.Understory]: 0,
+  [PropKind.Log]: 0,
 };
 export const PROP_COLLIDER_HEIGHT: Record<PropKind, number> = {
   [PropKind.Palm]: 8,
@@ -104,6 +117,12 @@ export const PROP_COLLIDER_HEIGHT: Record<PropKind, number> = {
   [PropKind.Reed]: 0,
   [PropKind.Mangrove]: 4,
   [PropKind.LemonTree]: 2.5,
+  [PropKind.JungleGiant]: 16,
+  [PropKind.TreeFern]: 3.5,
+  [PropKind.HolmOak]: 4,
+  [PropKind.Pine]: 10,
+  [PropKind.Understory]: 0,
+  [PropKind.Log]: 0,
 };
 
 /** Instances of one prop kind. data is packed [x, y, z, rotY, scale] * count. */
@@ -285,6 +304,9 @@ export interface World {
   windDir: number;
   /** Island archetype picked by the generator (debug / map display), e.g. "volcano". */
   archetype?: string;
+  /** Island character (debug / map display / renderer palette hints). */
+  climate?: "lush" | "tropical" | "mediterranean" | "dry";
+  coastStyle?: "beaches" | "cliffs" | "coves" | "mixed";
 
   // --- grids, GRID_RES * GRID_RES each ---------------------------------------
   /** Terrain surface height (m). Seabed is negative. */

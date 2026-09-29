@@ -148,6 +148,10 @@ export interface EnvUniforms {
   uNoise: { value: THREE.Texture };
   uFog: { value: THREE.Vector4 };
   uFocus: { value: THREE.Vector4 };
+  /** Canopy-cover map (see props/canopy.ts); a 1x1 "no cover" placeholder until props set it. */
+  uCanopy: { value: THREE.Texture };
+  /** x shade strength (0 = off), y sun-shadow distance (m), z/w unused. */
+  uCanopyP: { value: THREE.Vector4 };
   [k: string]: THREE.IUniform;
 }
 
@@ -166,5 +170,15 @@ export function makeEnvUniforms(env: Env, windDir: number, noise: THREE.Texture)
     uFog: { value: new THREE.Vector4(env.fogDensity, 0.012, 0, 60) },
     // player head for the camera-to-player foliage fade; w = 1 when active
     uFocus: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uCanopy: { value: noCanopyTexture() },
+    uCanopyP: { value: new THREE.Vector4(0, 120, 0, 0) },
   };
+}
+
+let noCanopy: THREE.DataTexture | null = null;
+function noCanopyTexture(): THREE.DataTexture {
+  if (noCanopy) return noCanopy;
+  noCanopy = new THREE.DataTexture(new Uint8Array(4), 1, 1, THREE.RGBAFormat);
+  noCanopy.needsUpdate = true;
+  return noCanopy;
 }

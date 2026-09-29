@@ -24,7 +24,7 @@ export function createPlayerState(id: number): PlayerState {
     sprinting: false, aiming: false, stamina: 1, staminaDelay: 0, exhausted: false,
     slideCd: 0, stumble: 0, dived: false,
     mx0: 0, my0: 0, mz0: 0, mx1: 0, my1: 0, mz1: 0, mDur: 0,
-    waterY: NO_WATER_Y, breath: 1, gasp: 0, wash: 0,
+    waterY: NO_WATER_Y, breath: 1, gasp: 0, wash: 0, paintT: 0,
     vehicle: -1, seat: -1, zip: -1, zipT: 0, zipV: 0,
     alive: false, coats: [], coatBy: [], upgrades: 0,
     hopper: C.HOPPER, reserve: C.RESERVE_START, reload: 0, fireCd: 0, shotSeq: 0,
@@ -273,7 +273,7 @@ function stepSwim(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number, presse
   p.waterY = W;
   if (W === NO_WATER_Y) { setMove(p, Move.Air); p.grounded = false; return 0; }
   computeWish(cmd);
-  const sprint = (cmd.buttons & Btn.Sprint) !== 0 && !p.exhausted;
+  const sprint = (cmd.buttons & Btn.Sprint) !== 0;
   let speed = (sprint ? C.SWIM_SPRINT : C.SWIM_SPEED) * wlen;
   if (p.upgrades & (1 << PickupKind.QuickFeet)) speed *= 1.1;
   const tvx = wx * speed, tvz = wz * speed;
@@ -448,7 +448,7 @@ function stepLand(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number, presse
   const move = p.move;
   p.sprinting = false;
   if (move === Move.Ground) {
-    const wantSprint = (b & Btn.Sprint) !== 0 && cmd.moveZ > 0.3 && !p.aiming && !p.exhausted && !wading && p.stumble <= 0;
+    const wantSprint = (b & Btn.Sprint) !== 0 && cmd.moveZ > 0.3 && !p.aiming && !wading && p.stumble <= 0;
     let max = p.aiming ? C.AIM_SPEED : wantSprint ? C.SPRINT_SPEED : C.RUN_SPEED;
     if (cmd.moveZ < -0.1) max *= C.BACK_MULT;
     if (quick) max *= C.QUICKFEET_MULT;
@@ -460,7 +460,7 @@ function stepLand(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number, presse
     approach(p, tx, tz, acc * dt);
     p.sprinting = wantSprint && hspeed(p) > C.RUN_SPEED * 0.8;
   } else if (move === Move.Air || move === Move.Dive) {
-    let max = p.aiming ? C.AIM_SPEED : (b & Btn.Sprint) && !p.exhausted ? C.SPRINT_SPEED : C.RUN_SPEED;
+    let max = p.aiming ? C.AIM_SPEED : (b & Btn.Sprint) ? C.SPRINT_SPEED : C.RUN_SPEED;
     if (quick) max *= C.QUICKFEET_MULT;
     const accel = (move === Move.Dive ? C.AIR_ACCEL * 0.3 : C.AIR_ACCEL) * dt;
     if (wlen > 0.05) {
@@ -504,17 +504,6 @@ function stepLand(p: PlayerState, cmd: InputCmd, env: SimEnv, dt: number, presse
     p.vx += p.gnx * C.STEEP_SLIDE_ACCEL * dt;
     p.vz += p.gnz * C.STEEP_SLIDE_ACCEL * dt;
     approach(p, p.vx + wx * wlen * 2, p.vz + wz * wlen * 2, 6 * dt);
-  }
-
-  // ---- stamina ---------------------------------------------------------------------
-  if (p.sprinting) {
-    p.stamina -= C.STAMINA_DRAIN * dt;
-    p.staminaDelay = C.STAMINA_DELAY;
-    if (p.stamina <= 0) { p.stamina = 0; p.exhausted = true; }
-  } else if (p.staminaDelay > 0) p.staminaDelay -= dt;
-  else {
-    p.stamina = Math.min(1, p.stamina + C.STAMINA_REGEN * dt);
-    if (p.exhausted && p.stamina >= C.STAMINA_UNLOCK) p.exhausted = false;
   }
 
   // ---- vertical + integrate ------------------------------------------------------

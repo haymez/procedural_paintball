@@ -12,12 +12,14 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   scaly teal "sea monster" skin (cosmetic only).
 - **Paint is health**: each hit coats you in the shooter's color; 3 coats =
   eliminated (splat into a puddle, respawn after ~3 s, choose 1 of 2 random
-  spawn points, brief spawn shield). **Water washes paint off** (heals) — but
-  swimming is slow, you can't shoot, and breath is limited: ~8 s submerged,
-  then you're forced to the surface gasping and can't dive again for a few
-  seconds. Washing off takes ~1.5 s submerged per coat.
+  spawn points, brief spawn shield). **Paint wears off** on its own: ~5 s
+  after the last hit, one coat flakes off every ~4 s. **Water washes it off
+  faster** (~1.5 s submerged per coat) — but swimming is slow, you can't
+  shoot, and breath is limited: ~8 s submerged, then you're forced to the
+  surface gasping and can't dive again for a few seconds. Submerged players
+  shimmer into a dark teal-navy "sea monster" skin (cosmetic only).
 - **Paint persists** on the world for the whole match.
-- **Movement**: bouncy, arcade, squash-and-stretch. Sprint (stamina), jump,
+- **Movement**: bouncy, arcade, squash-and-stretch. Sprint (unlimited), jump,
   slide, belly-flop dive, ledge mantle, cliff-jump into water, swim.
 - **Paintball marker**: slow arcing projectiles (~45 m/s, gravity), effective
   range ~40 m, limited hopper + reserve. Ammo caches and upgrades around the
@@ -27,6 +29,11 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   ziplines from high points. (Later: rope swings, stream currents, sidecars.)
 - **Match**: 10-minute timed FFA, most eliminations wins. Host picks seed,
   bot count. Rooms via lobby list or 4-char code.
+- **Island character** from the seed (shared/world/gen/character.ts), on top
+  of the archetype: climate (lush rainforest / tropical / Mediterranean /
+  dry), coast style (beaches / cliffs / calanque coves with jetties and moored
+  gondolas / mixed) and relief (low and rolling … tall). Forests grow in
+  contiguous stands (rainforest `Jungle`, holm-oak/pine `Forest`).
 - **Time of day** from the seed, always sunny (8:00–17:30).
 - **Audio**: CC0 SFX, biome-aware ambience, menu-only music.
 

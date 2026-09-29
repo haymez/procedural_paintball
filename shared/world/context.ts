@@ -1,5 +1,6 @@
 // Mutable state threaded through the generator stages.
 import type { Rng } from "../math/rng";
+import type { Character } from "./gen/character";
 import type {
   Cave, Lake, Landmark, Path, PickupSpawn, PropSet, River, SpawnPoint, Structure, VehicleSpawn,
   Waterfall, Zipline,
@@ -49,6 +50,8 @@ export interface Ctx {
   rng: Rng;
   skipDecor: boolean;
   archetype: ArchetypeKind;
+  /** Island character (climate, coast style, relief), picked before the coast. */
+  ch: Character;
   peaks: Peak[];
   ridges: Ridge[];
   /** Island center-ish (for radial logic). */
@@ -106,4 +109,6 @@ export interface Ctx {
   headlands: { x: number; z: number; score: number }[];
   islets: { x: number; z: number; r: number }[];
   stacks: { x: number; z: number; r: number; h: number }[];
+  /** Narrow inlets cut by the coast stage: head (x, z) and unit axis pointing out to sea. */
+  coves: { x: number; z: number; dx: number; dz: number; len: number; wid: number }[];
 }

@@ -200,12 +200,12 @@ function banana(lod: number): THREE.BufferGeometry {
 function fern(lod: number): THREE.BufferGeometry {
   const b = new Builder();
   const r = rng(31);
-  const n = lod ? 5 : 9;
+  const n = lod === 2 ? 4 : lod ? 5 : 9;
   for (let k = 0; k < n; k++) {
     const a = (k / n) * Math.PI * 2 + r() * 0.4;
     const d = v3(Math.cos(a), 0, Math.sin(a));
     const len = 0.9 + r() * 0.5;
-    const pts = curve(v3(0, 0.05, 0), d.clone().multiplyScalar(len * 0.4).add(v3(0, 0.75, 0)), d.clone().multiplyScalar(len).add(v3(0, 0.15, 0)), lod ? 2 : 6);
+    const pts = lod === 2 ? [v3(0, 0.05, 0), d.clone().multiplyScalar(len * 0.8).add(v3(0, 0.5, 0))] : curve(v3(0, 0.05, 0), d.clone().multiplyScalar(len * 0.4).add(v3(0, 0.75, 0)), d.clone().multiplyScalar(len).add(v3(0, 0.15, 0)), lod ? 2 : 6);
     b.ribbon(pts, (t) => 0.2 * Math.sin(Math.PI * Math.min(1, t + 0.05)), v3(-d.z, 0, d.x), (t) => mixC(0x3d8a33, 0x86c24a, t), (t) => [t, 0.8, 0], { fold: 0.3, serrate: lod ? 0 : 0.7, normalUp: 0.5 });
   }
   return b.build();
@@ -368,6 +368,294 @@ function mangrove(lod: number): THREE.BufferGeometry {
   return b.build();
 }
 
+// ----------------------------------------------------------- forest trees
+interface Lobe { x: number; y: number; z: number; r: number; sq: number }
+
+/** Plank buttress root: a thin concave fin from the trunk down to the ground. */
+function fin(b: Builder, dir: THREE.Vector3, trunkR: number, h: number, reach: number, thick: number, color: (t: number) => THREE.Color, n: number) {
+  const lat = v3(-dir.z, 0, dir.x);
+  const inner: THREE.Vector3[] = [], outer: THREE.Vector3[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const y = h * t - 0.25;
+    inner.push(dir.clone().multiplyScalar(trunkR * 0.5).setY(y));
+    outer.push(dir.clone().multiplyScalar(trunkR * 0.7 + reach * Math.pow(1 - t, 2.1)).setY(y));
+  }
+  for (const s of [1, -1]) {
+    const nrm = lat.clone().multiplyScalar(s).addScaledVector(dir, 0.35).normalize();
+    let pi = -1, po = -1;
+    for (let i = 0; i <= n; i++) {
+      const t = i / n, th = thick * (1 - t * 0.6);
+      const c = color(t);
+      const a = b.vertex(inner[i].clone().addScaledVector(lat, s * th), nrm, c.clone().multiplyScalar(0.8), [0, 0, 0]);
+      const o = b.vertex(outer[i].clone().addScaledVector(lat, s * th * 0.6), nrm, c, [0, 0, 0]);
+      if (pi >= 0) { if (s > 0) b.quad(pi, po, o, a); else b.quad(pi, a, o, po); }
+      pi = a; po = o;
+    }
+  }
+  // rounded outer edge
+  let p0 = -1, p1 = -1;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, th = thick * (1 - t * 0.6) * 0.6;
+    const tn = outer[Math.min(n, i + 1)].clone().sub(outer[Math.max(0, i - 1)]).normalize();
+    const nrm = new THREE.Vector3().crossVectors(lat, tn).normalize();
+    if (nrm.dot(dir) < 0) nrm.negate();
+    const c = color(t).multiplyScalar(1.08);
+    const a = b.vertex(outer[i].clone().addScaledVector(lat, th), nrm, c, [0, 0, 0]);
+    const o = b.vertex(outer[i].clone().addScaledVector(lat, -th), nrm, c, [0, 0, 0]);
+    if (p0 >= 0) b.quad(p0, a, o, p1);
+    p0 = a; p1 = o;
+  }
+}
+
+/** A hanging liana / aerial root: thin ribbon that sways and dithers like foliage. */
+function liana(b: Builder, top: THREE.Vector3, len: number, lat: THREE.Vector3, r: () => number, c0: number, c1: number, segs: number, width = 0.07) {
+  const drift = v3((r() - 0.5) * 0.6, 0, (r() - 0.5) * 0.6);
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    pts.push(top.clone().add(v3(drift.x * t * t + Math.sin(t * 5 + top.x) * 0.08, -len * t, drift.z * t * t)));
+  }
+  b.ribbon(pts, (t) => width * (1 - t * 0.4), lat, (t) => mixC(c0, c1, t), (t) => [0.5 + t * 0.5, 0.35, 0], { normalUp: 0.2 });
+}
+
+interface ForestTreeOpts {
+  seed: number;
+  /** trunk top (where branches fork), and lean of the trunk top in x/z */
+  trunkH: number; trunkR: number; leanX?: number; leanZ?: number; bend?: number;
+  bark: number; barkDark: number;
+  /** leaf colors: underside, mid, sunlit top */
+  under: number; mid: number; top: number;
+  lobes: Lobe[];
+  /** trunk continues up through the crown to this height (pines), else ends at trunkH */
+  leader?: number;
+  fins?: number; finReach?: number; finH?: number;
+  lianas?: number; lianaLen?: [number, number];
+  leaf?: number; // fringe card size
+  leafCount?: number; // fringe cards per unit lobe radius
+  moss?: number;
+  flatBottom?: number; // flatten lobe bottoms (0..1)
+  heightLight?: number; // how much higher lobes get lighter (default 0.45)
+}
+
+function forestTree(lod: number, o: ForestTreeOpts): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(o.seed);
+  const lx = o.leanX ?? 0, lz = o.leanZ ?? 0;
+  const top = v3(lx, o.trunkH, lz);
+  const bendV = v3(-lx * (o.bend ?? 0.3), 0, -lz * (o.bend ?? 0.3));
+  const trunkPts = curve(v3(0, -0.3, 0), v3(lx * 0.25, o.trunkH * 0.5, lz * 0.25).add(bendV), top, lod === 2 ? 1 : lod ? 3 : 6);
+  const bark = (t: number, a: number) => {
+    const ridge = lod ? 0.5 : 0.5 + 0.5 * Math.sin(a * 5 + t * 3);
+    const c = mixC(o.barkDark, o.bark, 0.35 + 0.5 * ridge + t * 0.15);
+    if (o.moss && !lod) c.lerp(col(0x5f8a3a), Math.max(0, Math.sin(a + 1.3)) * o.moss * (1 - t) * 0.8);
+    return c;
+  };
+  const flare = (t: number) => (t < 0.12 ? (0.12 - t) * o.trunkR * 5 : 0);
+  b.tube(trunkPts, (t) => o.trunkR * (1 - t * 0.4) + flare(t), lod === 2 ? 4 : lod ? 5 : 8, bark, (t) => [t * 0.12, 0, 0], !o.leader);
+  if (o.leader) {
+    const lead = curve(top, top.clone().add(v3(lx * 0.15, (o.leader - o.trunkH) * 0.5, lz * 0.15)), top.clone().add(v3(lx * 0.1, o.leader - o.trunkH, lz * 0.2)), lod ? 2 : 4);
+    b.tube(lead, (t) => o.trunkR * 0.6 * (1 - t * 0.8), lod === 2 ? 3 : lod ? 4 : 6, bark, (t) => [0.2 + t * 0.3, 0, 0]);
+  }
+  if (o.fins && lod < 2) {
+    const n = lod ? Math.min(3, o.fins) : o.fins;
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2 + r() * 0.5;
+      fin(b, v3(Math.cos(a), 0, Math.sin(a)), o.trunkR, (o.finH ?? 3) * (0.75 + r() * 0.5), (o.finReach ?? 2.5) * (0.7 + r() * 0.5), o.trunkR * 0.16, (t) => bark(t * 0.15, a), lod ? 2 : 4);
+    }
+  }
+  // limbs from the upper trunk out to the outer lobes (staggered, so the fork doesn't read as a whisk)
+  const branchN = lod === 2 ? 0 : lod ? Math.min(3, o.lobes.length) : Math.min(6, o.lobes.length);
+  const order = [...o.lobes].sort((a, c) => Math.hypot(c.x - lx, c.z - lz) - Math.hypot(a.x - lx, a.z - lz));
+  const tp0 = v3(0, -0.3, 0), tp1 = v3(lx * 0.25, o.trunkH * 0.5, lz * 0.25).add(bendV);
+  const onTrunk = (t: number) => { const u = 1 - t; return v3(u * u * tp0.x + 2 * u * t * tp1.x + t * t * top.x, u * u * tp0.y + 2 * u * t * tp1.y + t * t * top.y, u * u * tp0.z + 2 * u * t * tp1.z + t * t * top.z); };
+  for (let k = 0; k < branchN; k++) {
+    const L = order[k];
+    const end = v3(L.x, L.y - L.r * L.sq * 0.3, L.z);
+    let start: THREE.Vector3;
+    if (o.leader) {
+      const along = Math.min(1, Math.max(0, (end.y - 1.2 - o.trunkH) / Math.max(1, o.leader - o.trunkH)));
+      start = top.clone().lerp(top.clone().add(v3(0, o.leader - o.trunkH, 0)), along * 0.85).add(v3(0, -1.2, 0));
+    } else start = onTrunk(0.72 + ((k * 0.37) % 1) * 0.26);
+    const midP = start.clone().lerp(end, 0.45).add(v3(0, (o.leader ? 0.1 : 0.7) + r() * 0.4, 0));
+    b.tube(curve(start, midP, end, lod ? 2 : 3), (t) => o.trunkR * (o.leader ? 0.3 : 0.36) * (1 - t * 0.6), lod ? 3 : 4, bark, (t) => [0.15 + t * 0.25, 0, 0], false);
+  }
+  // crown lobes: dark undersides, sunlit tops, leafy fringe
+  const cc = new THREE.Vector3();
+  let cy0 = 1e9, cy1 = -1e9;
+  for (const L of o.lobes) { cc.add(v3(L.x, L.y, L.z)); cy0 = Math.min(cy0, L.y - L.r * L.sq); cy1 = Math.max(cy1, L.y + L.r * L.sq); }
+  cc.multiplyScalar(1 / o.lobes.length);
+  const span = Math.max(1, cy1 - cy0);
+  const leafC = (p: THREE.Vector3, n: THREE.Vector3, j = 0.06) => {
+    const h = Math.min(1, Math.max(0, (p.y - cy0) / span));
+    const up = n.y * 0.5 + 0.5;
+    const k = Math.min(1, Math.max(0, up * 0.75 + h * (o.heightLight ?? 0.45) - 0.2 + (0.45 - (o.heightLight ?? 0.45)) * 0.5));
+    const c = k < 0.5 ? mixC(o.under, o.mid, k * 2) : mixC(o.mid, o.top, (k - 0.5) * 2);
+    return vary(c, r, j);
+  };
+  const windOf = (p: THREE.Vector3): Wind => [Math.min(1, 0.35 + ((p.y - cy0) / span) * 0.4 + 0.25), 0.45, 0];
+  let list = o.lobes;
+  if (lod === 2) list = [...o.lobes].sort((a, c) => c.r - a.r).slice(0, Math.min(4, o.lobes.length));
+  else if (lod === 1) list = o.lobes.length > 5 ? [...o.lobes].sort((a, c) => c.r - a.r).slice(0, Math.ceil(o.lobes.length * 0.5)) : o.lobes;
+  const grow = lod === 2 ? 1.28 : lod === 1 && list.length < o.lobes.length ? 1.14 : 1;
+  list.forEach((L, i) => {
+    const center = v3(L.x, L.y, L.z);
+    const rr = L.r * grow;
+    // lod0: 80-tri puffs; lod1: 32-tri octa puffs (smooth normals hide the facets at range); lod2: 20-tri
+    const g = lod === 1 ? new THREE.OctahedronGeometry(1, 1) : new THREE.IcosahedronGeometry(1, lod === 2 ? 0 : 1);
+    const m = new THREE.Matrix4().compose(center, new THREE.Quaternion().setFromEuler(new THREE.Euler(0, r() * 3, 0)), v3(rr, rr * L.sq, rr));
+    const fb = o.flatBottom ?? 0;
+    b.add(g, m, (p, n) => leafC(p, n), windOf, {
+      sphereCenter: cc, sphereBlend: 0.6,
+      displace: (p) => wobble(p, 3.1, i + o.seed) * 0.13 + (p.y < -0.3 ? p.y * fb * 0.35 : 0),
+    });
+    g.dispose();
+    if (!lod) fringe(b, center, rr, L.sq, Math.round(3 + rr * (o.leafCount ?? 3.2)), (o.leaf ?? 0.5) + rr * 0.12, (p, n) => leafC(p, n, 0.1), (p) => { const w = windOf(p); return [w[0], 0.6, 0]; }, cc, r);
+  });
+  // lianas hanging from the lobes
+  const nl = lod === 2 ? 0 : lod ? Math.ceil((o.lianas ?? 0) / 3) : o.lianas ?? 0;
+  const [l0, l1] = o.lianaLen ?? [2, 5];
+  for (let k = 0; k < nl; k++) {
+    const L = o.lobes[(k * 3 + 1) % o.lobes.length];
+    const a = r() * Math.PI * 2;
+    const s = v3(L.x + Math.cos(a) * L.r * 0.6, L.y - L.r * L.sq * 0.6, L.z + Math.sin(a) * L.r * 0.6);
+    liana(b, s, l0 + r() * (l1 - l0), v3(Math.cos(a), 0, Math.sin(a)), r, 0x3e6e2c, 0x6a8a3a, lod ? 1 : 4, 0.06 + r() * 0.04);
+  }
+  return b.build();
+}
+
+/** Irregular ring-of-lobes crown: a central lobe plus `n` around it. */
+function ringCrown(seed: number, n: number, y: number, R: number, rMin: number, rMax: number, sq: number, yJit: number, center: { r: number; dy: number }, cx = 0, cz = 0): Lobe[] {
+  const r = rng(seed);
+  const out: Lobe[] = [{ x: cx, y: y + center.dy, z: cz, r: center.r, sq }];
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2 + (r() - 0.5) * 0.9;
+    const d = R * (0.55 + r() * 0.35);
+    out.push({ x: cx + Math.cos(a) * d, y: y + (r() - 0.5) * 2 * yJit, z: cz + Math.sin(a) * d, r: rMin + r() * (rMax - rMin), sq: sq * (0.9 + r() * 0.2) });
+  }
+  return out;
+}
+
+function treeFern(lod: number): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(91);
+  const H = 3.9;
+  const top = v3(0.25, H, 0.1);
+  const trunk = curve(v3(0, -0.2, 0), v3(-0.1, H * 0.5, 0.05), top, lod === 2 ? 1 : lod ? 3 : 7);
+  b.tube(trunk, (t) => 0.15 * (1 - t * 0.25) + (t < 0.1 ? (0.1 - t) * 1.2 : 0) + (t > 0.9 ? (t - 0.9) * 0.9 : 0), lod === 2 ? 3 : lod ? 4 : 6,
+    (t, a) => mixC(0x3a2c22, 0x5c4632, lod ? 0.4 : (Math.sin(t * 60 + a * 2) > 0.2 ? 0.8 : 0.2)).multiplyScalar(0.9 + t * 0.2), (t) => [t * 0.25, 0, 0], false);
+  const n = lod === 2 ? 6 : lod ? 9 : 15;
+  const segs = lod === 2 ? 2 : lod ? 4 : 12;
+  for (let f = 0; f < n; f++) {
+    const a = (f / n) * Math.PI * 2 + r() * 0.25;
+    const inner = f % 5 === 0; // a few younger fronds stand up
+    const d = v3(Math.cos(a), 0, Math.sin(a));
+    const len = (inner ? 1.7 : 2.5) + r() * 0.5;
+    const rise = inner ? 0.9 + r() * 0.3 : 0.35 + r() * 0.25;
+    const droop = inner ? 0.35 : 1.1 + r() * 0.5;
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      pts.push(top.clone().addScaledVector(d, len * t).add(v3(0, Math.sin(t * Math.PI * 0.5) * rise - t * t * t * droop, 0)));
+    }
+    // lacy frond: comb-like pinnae (serrate), widest a third of the way out
+    b.ribbon(pts, (t) => 0.3 * Math.pow(Math.sin(Math.PI * Math.min(1, t * 0.9 + 0.1)), 0.8) * (t < 0.1 ? t * 7 + 0.3 : 1), v3(-d.z, 0, d.x),
+      (t, e) => mixC(0x285e2a, 0x6aaa44, t * 0.6 + (inner ? 0.25 : 0)).multiplyScalar(e ? 0.88 : 1.1),
+      (t) => [0.45 + t * 0.55, 0.4 + t * 0.6, 0], { fold: 0.18, serrate: lod ? 0 : 0.7, normalUp: 0.45 });
+  }
+  if (!lod) {
+    // fiddleheads
+    for (let k = 0; k < 3; k++) {
+      const a = r() * Math.PI * 2;
+      blob(b, top.clone().add(v3(Math.cos(a) * 0.12, 0.2 + r() * 0.1, Math.sin(a) * 0.12)), 0.07, 1, 0, () => col(0x8a9a4a), [0.3, 0, 0], top, k, 0.01);
+    }
+  }
+  return b.build();
+}
+
+/** Big-leaf forest-floor plant: heart-shaped leaves (elephant ear / philodendron) on long petioles. */
+function understory(lod: number): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(101);
+  const n = lod === 2 ? 4 : lod ? 5 : 7;
+  const side = lod === 2 ? [[0.1, 0.55], [0.6, 0.4]] : lod ? [[-0.15, 0.4], [0.15, 0.6], [0.55, 0.45], [0.82, 0.2]]
+    : [[-0.06, 0.16], [-0.2, 0.36], [-0.12, 0.54], [0.08, 0.62], [0.32, 0.58], [0.56, 0.44], [0.78, 0.24], [0.92, 0.08]];
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2 + r() * 0.6;
+    const d = v3(Math.cos(a), 0, Math.sin(a));
+    const lat = v3(-d.z, 0, d.x);
+    const stemH = 0.55 + r() * 0.55;
+    const base = d.clone().multiplyScalar(0.25 + r() * 0.2).setY(stemH);
+    const L = 0.75 + r() * 0.35, Wd = 0.9 + r() * 0.15;
+    const pitch = -0.25 - r() * 0.35; // leaf blade tilts down toward the tip
+    const dir = d.clone().multiplyScalar(Math.cos(pitch)).setY(Math.sin(pitch)).normalize();
+    const nrm = new THREE.Vector3().crossVectors(dir, lat).normalize();
+    if (nrm.y < 0) nrm.negate();
+    const dark = mixC(0x2a6a30, 0x3f8238, r()), light = mixC(0x5aa845, 0x7cc050, r());
+    const P = (u: number, v: number) => base.clone().addScaledVector(dir, u * L).addScaledVector(lat, v * L * Wd).addScaledVector(nrm, -0.12 * Math.abs(v) * L - 0.06 * u * u * L);
+    const w = (u: number): Wind => [0.5 + Math.max(0, u) * 0.4, 0.7, 0];
+    const cU = 0.35;
+    const ctr = b.vertex(P(cU, 0).addScaledVector(nrm, 0.04), nrm, light, w(cU));
+    const loop: [number, number][] = [[0, 0], ...side.map(([u, v]) => [u, v] as [number, number]), [1, 0], ...[...side].reverse().map(([u, v]) => [u, -v] as [number, number])];
+    const ids = loop.map(([u, v]) => b.vertex(P(u, v), nrm.clone().addScaledVector(lat, v * 0.4).normalize(), u === 0 || (u === 1 && v === 0) ? light.clone().lerp(dark, 0.3) : dark, w(u)));
+    for (let e = 0; e < ids.length; e++) b.tri(ctr, ids[e], ids[(e + 1) % ids.length]);
+    // petiole
+    b.ribbon(curve(v3(0, 0, 0), d.clone().multiplyScalar(0.1).setY(stemH * 0.6), base, lod ? 1 : 3), () => 0.025, lat, () => col(0x5c8a36), (t) => [t * 0.5, 0.2, 0]);
+  }
+  return b.build();
+}
+
+function fallenLog(lod: number): THREE.BufferGeometry {
+  const b = new Builder();
+  const r = rng(111);
+  const R = 0.34;
+  const pts = curve(v3(-1.8, R * 0.8, 0.1), v3(0, R * 0.95, -0.25), v3(1.7, R * 0.75, 0.15), lod === 2 ? 1 : lod ? 3 : 7);
+  const bark = (t: number, a: number) => {
+    const upness = Math.sin(a); // tube side dir: +bin ~ up at 90 deg
+    const c = mixC(0x6a5038, 0x8f7052, 0.5 + 0.5 * Math.sin(a * 7 + t * 13));
+    return c.lerp(col(0x6a9a3a), Math.min(1, Math.max(0, upness + 0.1) * 1.4) * (0.75 + 0.25 * Math.sin(t * 9)));
+  };
+  b.tube(pts, (t) => R * (1 - t * 0.2) * (lod ? 1 : 1 + 0.06 * Math.sin(t * 23)), lod === 2 ? 4 : lod ? 6 : 9, bark, () => [0, 0, 0], false);
+  if (lod < 2) {
+    // splintered pale end caps
+    for (const [pi, sgn] of [[0, -1], [pts.length - 1, 1]] as [number, number][]) {
+      const c = pts[pi], tn = pts[Math.min(pts.length - 1, Math.max(0, pi - sgn))].clone().sub(c).normalize().negate();
+      const rr = R * (pi ? 0.8 : 1);
+      const sideV = new THREE.Vector3().crossVectors(tn, v3(0, 1, 0)).normalize(), bin = new THREE.Vector3().crossVectors(sideV, tn).normalize();
+      const ctr = b.vertex(c.clone().addScaledVector(tn, 0.06), tn, col(0xd8b889), [0, 0, 0]);
+      const ring: number[] = [];
+      const k = lod ? 6 : 9;
+      for (let e = 0; e <= k; e++) {
+        const a = (e / k) * Math.PI * 2;
+        const jag = lod ? 0 : (e % 2 ? 0.07 : -0.01) * (1 + r());
+        ring.push(b.vertex(c.clone().addScaledVector(sideV, Math.cos(a) * rr).addScaledVector(bin, Math.sin(a) * rr).addScaledVector(tn, jag), tn, col(0xb8945f), [0, 0, 0]));
+      }
+      for (let e = 0; e < k; e++) { if (sgn > 0) b.tri(ctr, ring[e], ring[e + 1]); else b.tri(ctr, ring[e + 1], ring[e]); }
+    }
+    // broken stub branch
+    b.tube([v3(0.5, R * 1.4, -0.05), v3(0.62, R * 1.4 + 0.3, 0.15), v3(0.66, R * 1.4 + 0.45, 0.28)], (t) => 0.08 * (1 - t * 0.5), lod ? 3 : 5, (t, a) => bark(t * 0.3, a), () => [0, 0, 0]);
+  }
+  if (!lod) {
+    // bracket fungi on the flank and a moss cushion on top
+    for (let k = 0; k < 4; k++) {
+      const t = 0.2 + r() * 0.6;
+      const p = pts[Math.round(t * (pts.length - 1))].clone().add(v3(0, -0.02 + r() * 0.12, (R + 0.06) * (k % 2 ? 1 : -1)));
+      const g = new THREE.IcosahedronGeometry(1, 0);
+      b.add(g, new THREE.Matrix4().compose(p, new THREE.Quaternion(), v3(0.16 + r() * 0.06, 0.04, 0.13)), (_p, n) => mixC(0xd9772e, 0xffd48a, n.y * 0.5 + 0.5), [0, 0, 0]);
+      g.dispose();
+    }
+    blob(b, pts[Math.round(pts.length * 0.35)].clone().add(v3(0, R * 0.75, 0)), 0.3, 0.35, 0, (_p, n) => mixC(0x4f7f2e, 0x7aa844, n.y * 0.5 + 0.5), [0, 0.1, 0], pts[3], 5, 0.04);
+    // a couple of fern sprigs growing off it
+    for (let k = 0; k < 3; k++) {
+      const a = r() * Math.PI * 2;
+      const s = pts[2 + k * 2].clone().add(v3(0, R * 0.7, 0));
+      const d = v3(Math.cos(a), 0, Math.sin(a));
+      b.ribbon(curve(s, s.clone().addScaledVector(d, 0.2).add(v3(0, 0.35, 0)), s.clone().addScaledVector(d, 0.55).add(v3(0, 0.15, 0)), 3), (t) => 0.09 * Math.sin(Math.PI * Math.min(1, t + 0.05)), v3(-d.z, 0, d.x), (t) => mixC(0x3d8a33, 0x86c24a, t), (t) => [t, 0.8, 0], { fold: 0.3, serrate: 0.6, normalUp: 0.5 });
+    }
+  }
+  return b.build();
+}
+
 // --------------------------------------------------------------- catalog
 let cache: Map<PropKind, PropModel> | null = null;
 
@@ -377,10 +665,58 @@ export function propModels(): Map<PropKind, PropModel> {
   const both = (kind: PropKind, fn: (lod: number) => THREE.BufferGeometry, height: number, radius: number) => m.set(kind, { lod0: fn(0), lod1: fn(1), lod2: fn(2), height, radius });
   both(PropKind.Palm, (l) => palm(l, 0.12), 10, 4.5);
   both(PropKind.PalmLeaning, (l) => palm(l, 0.55), 9, 5.5);
-  both(PropKind.Broadleaf, (l) => canopyTree(l, {
-    seed: 3, trunkH: 7.5, trunkR: 0.55, bark: 0x8a7560, leafDark: 0x3d8636, leafLight: 0x86c450, buttress: true, vines: 3, forks: 3,
-    blobs: [{ x: 0, y: 9.4, z: 0, r: 3.2, sq: 0.7 }, { x: 2.6, y: 8.5, z: 0.8, r: 2.4, sq: 0.7 }, { x: -2.4, y: 8.7, z: -0.6, r: 2.5, sq: 0.7 }, { x: 0.6, y: 8.3, z: 2.6, r: 2.2, sq: 0.7 }, { x: -0.5, y: 8.6, z: -2.6, r: 2.3, sq: 0.7 }, { x: 0.3, y: 10.8, z: 0.2, r: 2.0, sq: 0.8 }],
-  }), 12, 5.5);
+  // rainforest canopy tree: tall clean trunk, broad irregular two-layer lumpy crown
+  both(PropKind.Broadleaf, (l) => forestTree(l, {
+    seed: 3, trunkH: 8.4, trunkR: 0.5, leanX: 0.3, leanZ: 0.1, bark: 0x8e7a62, barkDark: 0x5e4d3c,
+    under: 0x24542a, mid: 0x3f8436, top: 0x88c24e, fins: 4, finReach: 1.6, finH: 2.2,
+    lobes: [
+      ...ringCrown(4, 8, 10.0, 5.0, 2.1, 3.0, 0.7, 1.3, { r: 3.1, dy: 1.6 }, 0.3, 0.1),
+      ...ringCrown(5, 2, 12.3, 2.0, 1.9, 2.2, 0.75, 0.4, { r: 0, dy: 0 }, 0.3, 0.1).slice(1),
+    ],
+    lianas: 4, lianaLen: [2.5, 6], leaf: 0.55, leafCount: 1.5, moss: 0.5, flatBottom: 0.35,
+  }), 14, 6.5);
+  both(PropKind.JungleGiant, (l) => forestTree(l, {
+    seed: 7, trunkH: 16, trunkR: 0.95, leanX: -0.6, leanZ: 0.4, bend: 0.5, bark: 0xb3a892, barkDark: 0x7c7263,
+    under: 0x2c5a2c, mid: 0x4a8a3a, top: 0x9ccb5a, fins: 6, finReach: 3.6, finH: 4.6,
+    lobes: [
+      ...ringCrown(8, 8, 18.2, 6.4, 2.7, 3.5, 0.62, 1.0, { r: 3.9, dy: 1.3 }, -0.6, 0.4),
+      ...ringCrown(9, 4, 20.6, 3.4, 2.3, 2.8, 0.66, 0.5, { r: 0, dy: 0 }, -0.6, 0.4).slice(1),
+    ],
+    lianas: 9, lianaLen: [6, 13], leaf: 0.65, leafCount: 1.5, moss: 0.7, flatBottom: 0.5,
+  }), 23, 10.5);
+  both(PropKind.HolmOak, (l) => forestTree(l, {
+    seed: 12, trunkH: 3.3, trunkR: 0.4, leanX: 0.35, leanZ: -0.2, bend: 0.6, bark: 0x6f6254, barkDark: 0x463d35,
+    under: 0x284a2c, mid: 0x3e6636, top: 0x7c9a54,
+    lobes: [
+      ...ringCrown(13, 7, 5.9, 3.3, 1.5, 2.0, 0.74, 0.5, { r: 2.4, dy: 1.2 }, 0.35, -0.2),
+      ...ringCrown(14, 3, 7.5, 1.7, 1.3, 1.6, 0.8, 0.3, { r: 0, dy: 0 }, 0.35, -0.2).slice(1),
+    ],
+    leaf: 0.36, leafCount: 2.4, moss: 0.25, flatBottom: 0.4,
+  }), 9, 4.8);
+  // Aleppo pine: leaning bare trunk, irregular tiers of puffy clumps on side branches
+  const pineLobes: Lobe[] = (() => {
+    const r = rng(17);
+    const out: Lobe[] = [];
+    const tiers = [[8.0, 3.0, 4], [9.6, 2.6, 4], [11.1, 2.0, 3], [12.5, 1.1, 2]] as const;
+    let a0 = 0.4;
+    for (const [y, R, n] of tiers) {
+      for (let k = 0; k < n; k++) {
+        if (r() < 0.2) continue; // gaps make it read as a pine, not a lollipop
+        const a = a0 + (k / n) * Math.PI * 2 + (r() - 0.5) * 1.0;
+        const lean = (y / 13) * 1.3;
+        out.push({ x: lean + Math.cos(a) * R * (0.55 + r() * 0.45), y: y + (r() - 0.5) * 0.9, z: lean * 0.3 + Math.sin(a) * R * (0.55 + r() * 0.45), r: 1.1 + r() * 0.6 + (R > 2.5 ? 0.25 : 0), sq: 0.55 + r() * 0.12 });
+      }
+      a0 += 1.1;
+    }
+    return out;
+  })();
+  both(PropKind.Pine, (l) => forestTree(l, {
+    seed: 19, trunkH: 7.4, trunkR: 0.3, leanX: 0.75, leanZ: 0.2, bend: 0.8, leader: 12.4, bark: 0x8e6a56, barkDark: 0x57423a,
+    under: 0x2c4a33, mid: 0x4a6f42, top: 0x86a462, lobes: pineLobes, leaf: 0.32, leafCount: 3.2, flatBottom: 0.7, heightLight: 0.12,
+  }), 14, 4.5);
+  both(PropKind.TreeFern, treeFern, 5, 2.6);
+  both(PropKind.Understory, understory, 1.6, 1.3);
+  both(PropKind.Log, fallenLog, 1.4, 2);
   both(PropKind.UmbrellaPine, (l) => canopyTree(l, {
     seed: 5, trunkH: 6.2, trunkR: 0.32, bark: 0x7d5a45, leafDark: 0x3b6d38, leafLight: 0x74a84e, forks: 4, twist: 0.6,
     blobs: [{ x: 0, y: 7.4, z: 0, r: 3.2, sq: 0.38 }, { x: 2.7, y: 7.0, z: 0.9, r: 2.3, sq: 0.42 }, { x: -2.5, y: 7.1, z: -1, r: 2.4, sq: 0.42 }, { x: 0.8, y: 7.0, z: -2.6, r: 2.2, sq: 0.42 }, { x: -0.9, y: 6.9, z: 2.5, r: 2.1, sq: 0.42 }],

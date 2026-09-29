@@ -76,7 +76,7 @@
 }
 .ih-dmg > div.on { opacity: 1; transition: none; }
 
-/* breath ring + stamina */
+/* breath ring */
 .ih-breath { position: absolute; left: 50%; top: calc(50% - 88px); transform: translateX(-50%); display: flex; gap: 5px; }
 .ih-breath b {
   width: 13px; height: 13px; border-radius: 50%; border: 2.5px solid var(--ink);
@@ -86,9 +86,6 @@
 .ih-breath b.gone { transform: scale(0.35); opacity: 0.25; }
 .ih-breath.low b { animation: ih-pulse 0.5s infinite alternate; }
 @keyframes ih-pulse { to { transform: scale(1.25); } }
-.ih-stam { position: absolute; left: 50%; top: calc(50% + 46px); width: 96px; height: 7px; margin-left: -48px; border-radius: 4px; background: rgba(35, 55, 75, 0.35); overflow: hidden; transition: opacity 0.4s; }
-.ih-stam i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sun); border-radius: 4px; }
-.ih-stam.ex i { background: var(--coral); }
 
 /* ------------------------------------------------------------ top center: timer + compass */
 .ih-top { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; }

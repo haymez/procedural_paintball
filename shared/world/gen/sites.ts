@@ -7,7 +7,7 @@ import { smoothstep } from "../../math/vec";
 import type { Ctx, Site } from "../context";
 import { gx, N, sample, slopeGrid, toI } from "../grid";
 import { NO_WATER, StructureKind, Material, type Solid } from "../types";
-import { aqueduct, boathouse, Builder, chapel, cottage, lighthouse, TINT, vespaShed, watchtower, well, type Spot } from "./build";
+import { aqueduct, boathouse, Builder, chapel, cottage, jetty, lighthouse, TINT, vespaShed, watchtower, well, type Spot } from "./build";
 
 export const BLOCK_STRUCT = 1;
 export const BLOCK_PATH = 2;
@@ -399,6 +399,28 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       sites.push({ kind: "aqueduct", x: c.x, z: c.z, y: Y, rot, radius: 12, structureIds: ids, spots, door: { x: b.wx(0, 5), z: b.wz(0, 5) } });
     }
   }
+  // ---- jetties at the heads of coves ---------------------------------------------
+  for (const cv of ctx.coves) {
+    // walk from the head pool inland to the shore
+    let bx = 0, bz = 0, found = false;
+    for (let t = 0; t < cv.wid * 2.5; t += 1) {
+      const x = cv.x - cv.dx * t, z = cv.z - cv.dz * t;
+      if (sample(h, x, z) > 0.35) { bx = x; bz = z; found = true; break; }
+    }
+    if (!found || ctx.blocked[toI(bz) * N + toI(bx)] & (BLOCK_STRUCT | BLOCK_DOCK)) continue;
+    let len = 5;
+    while (len < 14 && sample(h, bx + cv.dx * (len + 1), bz + cv.dz * (len + 1)) > -1.5) len += 1;
+    if (sample(h, bx + cv.dx * len, bz + cv.dz * len) > -0.8) continue;
+    // run on a few metres into deeper water, if the cove allows it
+    for (let k = 0; k < 5 && sample(h, bx + cv.dx * (len + 3), bz + cv.dz * (len + 3)) < -1.2; k++) len += 1;
+    const rot = atan2(-cv.dx, -cv.dz); // local -Z faces the water
+    const b = new Builder(bx, 0, bz, rot);
+    const spots = jetty(b, rng.fork("jetty" + ctx.coves.indexOf(cv)), len, 0.85, (lx, lz) => sample(h, b.wx(lx, lz), b.wz(lx, lz)));
+    const id = addStructure(ctx, StructureKind.Dock, b);
+    markDisc(ctx, b.wx(0, -len / 2), b.wz(0, -len / 2), len / 2 + 2, BLOCK_DOCK);
+    sites.push({ kind: "jetty", x: bx, z: bz, y: 0.85, rot, radius: 4, structureIds: [id], spots, door: { x: b.wx(0, 4), z: b.wz(0, 4) } });
+  }
+
   slopeGrid(ctx.height, ctx.slope);
   void cos;
 }

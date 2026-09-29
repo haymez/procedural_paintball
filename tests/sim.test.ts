@@ -4,7 +4,7 @@ import { sdf } from "../shared/world/collide";
 import type { World } from "../shared/world/types";
 import {
   BODY_R, Btn, createEnv, createPlayerState, copyPlayerState, MatchSim, Move, STEP_H, stepPlayer, TICK_DT, waterAt,
-  NO_WATER_Y, probeGround, BLOCKED, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
+  NO_WATER_Y, probeGround, BLOCKED, PAINT_WEAR_DELAY, PAINT_WEAR_TIME, WASH_TIME, type InputCmd, type PlayerState, type SimEnv, bodyHeight, captureSnapshot, restorePlayer,
 } from "../shared/sim/index";
 import { Dummy } from "../shared/sim/dummy";
 import { VehicleKind } from "../shared/world/types";
@@ -186,11 +186,60 @@ describe("MatchSim", () => {
     expect(p.coats.length).toBe(0);
   });
 
+  it("paint wears off on land over time; a new hit resets the clock", () => {
+    const sim = new MatchSim(world, { env });
+    const s = flatSpot();
+    const p = sim.addPlayer(1, { name: "A", color: 0xff0000, isBot: false });
+    sim.addPlayer(2, { name: "B", color: 0x00ff00, isBot: false });
+    sim.teleport(1, s.x, s.y + 0.1, s.z);
+    sim.teleport(2, s.x + 30, NaN, s.z);
+    p.shield = 0;
+    let seq = 0;
+    const wears: number[] = [];
+    const run = (sec: number) => {
+      for (let i = 0; i < sec * 60; i++) {
+        sim.applyInput(1, cmd({ seq: seq++ }));
+        sim.step();
+        for (const e of sim.events) if (e.type === "wear" && e.pid === 1) wears.push(sim.time);
+        sim.events.length = 0;
+      }
+    };
+    sim.paint(1, 2);
+    sim.paint(1, 2);
+    expect(p.coats.length).toBe(2);
+    const t0 = sim.time;
+    // nothing before PAINT_WEAR_DELAY + PAINT_WEAR_TIME
+    run(PAINT_WEAR_DELAY + PAINT_WEAR_TIME - 0.2);
+    expect(p.coats.length).toBe(2);
+    run(0.4);
+    expect(p.coats.length).toBe(1);
+    expect(wears[0] - t0).toBeCloseTo(PAINT_WEAR_DELAY + PAINT_WEAR_TIME, 1);
+    // a fresh hit restarts the full delay
+    run(2);
+    sim.paint(1, 2);
+    const t1 = sim.time;
+    expect(p.coats.length).toBe(2);
+    run(PAINT_WEAR_DELAY + PAINT_WEAR_TIME * 2 + 0.3);
+    expect(p.coats.length).toBe(0);
+    expect(p.paintT).toBe(0);
+    expect(wears.length).toBe(3);
+    expect(wears[1] - t1).toBeCloseTo(PAINT_WEAR_DELAY + PAINT_WEAR_TIME, 1);
+    // later coats come off every PAINT_WEAR_TIME
+    expect(wears[2] - wears[1]).toBeCloseTo(PAINT_WEAR_TIME, 1);
+    // washing stays faster than wearing
+    expect(WASH_TIME).toBeLessThan(PAINT_WEAR_TIME);
+    expect(p.alive).toBe(true);
+  });
+
   it("dummies roam for a minute without ending inside solids", () => {
     const sim = new MatchSim(world, { env, durationSec: 120 });
     const dummies: Dummy[] = [];
+    // start on the 12 spawns nearest spawn 0 so the dummies actually meet (they only wander locally)
+    const s0 = world.spawns[0];
+    const near = world.spawns.map((s, k) => ({ k, d: (s.x - s0.x) ** 2 + (s.z - s0.z) ** 2 })).sort((a, b) => a.d - b.d);
     for (let i = 1; i <= 12; i++) {
-      sim.addPlayer(i, { name: "D" + i, color: 0xffffff, isBot: true });
+      const p = sim.addPlayer(i, { name: "D" + i, color: 0xffffff, isBot: true });
+      sim.respawn(p, near[i - 1].k);
       dummies.push(new Dummy(i, 42, 0.8));
     }
     let worst = Infinity, shots = 0;

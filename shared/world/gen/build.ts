@@ -413,6 +413,33 @@ export function boathouse(b: Builder, rng: Rng, dockLen: number, dockY: number, 
   return spots;
 }
 
+/**
+ * Wooden jetty from the shore (origin) out along local -Z over the water:
+ * plank deck on piles, a mooring pole or two and bollards at the end.
+ */
+export function jetty(b: Builder, rng: Rng, len: number, top: number, seabed: (lx: number, lz: number) => number): Spot[] {
+  const dw = 0.9;
+  const z0 = 1.5, z1 = -len;
+  b.box(0, top - 0.22, (z0 + z1) / 2, dw, 0.22, (z0 - z1) / 2, Material.Wood, TINT.wood);
+  for (let z = z0 - 1.2; z > z1; z -= 2.6) {
+    for (const x of [-dw + 0.12, dw - 0.12]) {
+      const bed = seabed(x, z) - b.oy;
+      const hgt = top - 0.2 - bed;
+      if (hgt > 0.3) b.cyl(x, bed, z, 0.12, hgt, Material.WoodDark, TINT.wood);
+    }
+  }
+  b.cyl(-dw + 0.22, top, z1 + 0.35, 0.13, 0.42, Material.WoodDark, TINT.wood);
+  b.cyl(dw - 0.22, top, z1 + 0.35, 0.13, 0.42, Material.WoodDark, TINT.wood);
+  // tall striped mooring poles (paline) beside the end, Venetian style
+  const side = rng.chance(0.5) ? 1 : -1;
+  for (let k = 0; k < 2; k++) {
+    const x = side * (dw + 2.6 + k * 0.1), z = z1 + 1.2 + k * 3.2;
+    const bed = seabed(x, z) - b.oy;
+    if (top + 1.6 - bed > 0.5) b.cyl(x, bed, z, 0.13, top + 1.6 - bed, Material.Wood, rng.pick([0x4f7fa0, 0xd8584a, 0x4f8a6b]));
+  }
+  return [worldSpot(b, 0, top + 0.1, z1 + 1.2, "dockEnd")];
+}
+
 export function vespaShed(b: Builder, rng: Rng): Spot[] {
   const w = 4.2, d = 3.2, hw = w / 2, hd = d / 2, t = 0.3, H = 2.7;
   const tint = pickStucco(rng);

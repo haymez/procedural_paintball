@@ -228,7 +228,7 @@ export class Actors {
       let coatsChanged = a.coats.length !== p.coats.length;
       for (let i = 0; !coatsChanged && i < p.coats.length; i++) if (a.coats[i] !== p.coats[i]) coatsChanged = true;
       if (coatsChanged) {
-        if (p.coats.length < a.coats.length && p.alive) a.washSwirlT = 0.6;
+        if (p.coats.length < a.coats.length && p.alive && (p.move === Move.Swim || p.move === Move.Underwater)) a.washSwirlT = 0.6;
         a.coats = p.coats.slice();
         st.coats = a.coats;
       }

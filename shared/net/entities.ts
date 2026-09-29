@@ -11,6 +11,7 @@
 // Coats travel as shooter ids (packIds): each end maps ids to colors.
 import type { PlayerState, VehicleState } from "../sim/types";
 import { WORLD_HALF } from "../world/types";
+import { PAINT_WEAR_DELAY, PAINT_WEAR_TIME } from "../sim/constants";
 import { field, packIds, packPair, schema, unpackIds, unpackPair, type Field, type Schema } from "./schema";
 
 export const Y_MIN = -64;
@@ -136,6 +137,7 @@ export const OWN: Schema<P> = schema<P>("own", [
   num("breath", "f32"),
   num("gasp", "f32"),
   num("wash", "f32"),
+  q8("paintT", PAINT_WEAR_DELAY + PAINT_WEAR_TIME),
   num("waterY", "f32"),
   num("zipT", "f32"),
   num("zipV", "f32"),

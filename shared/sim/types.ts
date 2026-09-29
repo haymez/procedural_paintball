@@ -89,6 +89,7 @@ export interface PlayerState {
   prevButtons: number;
   sprinting: boolean;
   aiming: boolean;
+  /** Sprint is unlimited: stamina stays 1 and exhausted false (kept for the wire format). */
   stamina: number;
   staminaDelay: number;
   exhausted: boolean;
@@ -105,6 +106,8 @@ export interface PlayerState {
   breath: number;
   gasp: number;
   wash: number;
+  /** Seconds since the last coat landed (paint wears off, PAINT_WEAR_*); 0 while clean. */
+  paintT: number;
   // ---- mounts ---------------------------------------------------------------
   vehicle: number; // vehicle id or -1
   seat: number;
@@ -211,6 +214,8 @@ export type SimEvent =
   | { type: "zipStart"; pid: number; zip: number }
   | { type: "zipEnd"; pid: number; zip: number }
   | { type: "wash"; pid: number; coats: number; color: number }
+  /** A coat wore off by itself (no water). */
+  | { type: "wear"; pid: number; coats: number; color: number }
   | { type: "move"; pid: number; fx: number; x: number; y: number; z: number; speed: number }
   | { type: "reload"; pid: number }
   | { type: "reloaded"; pid: number }

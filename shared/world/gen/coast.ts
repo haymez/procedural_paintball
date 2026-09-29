@@ -230,10 +230,14 @@ export function coastStage(ctx: Ctx, rng: Rng): void {
   ctx.cx = cx;
   ctx.cz = cz;
   const shape = buildShape(kind, rng.fork("shape"), cx, cz);
+  const ch = ctx.ch;
+  for (const p of shape.peaks) p.h *= ch.relief;
+  for (const r of shape.ridges) for (const p of r.pts) p.h *= ch.relief;
+  shape.cliffBias += ch.cliffBias;
 
   // A few random offshore islets.
   const islets: { x: number; z: number; r: number }[] = [];
-  const nIslets = rng.intRange(1, 3);
+  const nIslets = rng.intRange(1, 3) + ch.islets;
   for (let i = 0; i < nIslets; i++) {
     const a = rng.range(0, TAU);
     const d = rng.range(390, 440);
@@ -338,6 +342,8 @@ export function coastStage(ctx: Ctx, rng: Rng): void {
     }
   }
 
+  carveCoves(ctx, coarse, H, rng.fork("coves"));
+
   const land = ctx.land;
   const mask = new Float32Array(NN);
   for (let iz = 0; iz < N; iz++) {
@@ -395,7 +401,16 @@ export function coastStage(ctx: Ctx, rng: Rng): void {
       }
       const exposure = 0.5 - ctx.shelter[i] + (0.5 - near[i]) * 0.6;
       const raw = cn.fbm(x / 230, z / 230, 3) * 0.9 + exposure * 1.1 + m * 0.6 + shape.cliffBias - 0.25;
-      src[i] = smoothstep(0.0, 0.28, raw);
+      let cv = smoothstep(0.0, 0.28, raw);
+      // coves: rock walls along the sides, a small beach at the head
+      for (const cv0 of ctx.coves) {
+        const rx = x - cv0.x, rz = z - cv0.z;
+        const t = rx * cv0.dx + rz * cv0.dz, l = Math.abs(rx * cv0.dz - rz * cv0.dx);
+        if (t < -cv0.wid * 1.5 || t > cv0.len * 1.1 || l > cv0.wid * 2.2) continue;
+        if (t < cv0.wid * 1.2) cv = Math.min(cv, 0.08 * smoothstep(0, cv0.wid * 1.2, t));
+        else cv = Math.max(cv, ch.coastStyle === "beaches" ? 0.45 : 0.9);
+      }
+      src[i] = cv;
       isCoast[i] = 1;
     }
   }
@@ -411,6 +426,66 @@ export function coastStage(ctx: Ctx, rng: Rng): void {
   }
 
   detectCoastFeatures(ctx, islets);
+}
+
+/**
+ * Narrow inlets (calanques) cut into the coarse coast mask, bottle-shaped:
+ * a slightly wider pool at the head behind a narrower mouth. Recorded in
+ * ctx.coves (head + outward axis) for cliff shaping, boats and names.
+ */
+function carveCoves(ctx: Ctx, coarse: Float32Array, H: number, rng: Rng): void {
+  const want = ctx.ch.coves;
+  if (want <= 0) return;
+  const pts: number[] = [];
+  for (let iz = 3; iz < H - 3; iz++)
+    for (let ix = 3; ix < H - 3; ix++) {
+      const i = iz * H + ix;
+      if (coarse[i] > 0 && (coarse[i - 1] <= 0 || coarse[i + 1] <= 0 || coarse[i - H] <= 0 || coarse[i + H] <= 0)) pts.push(i);
+    }
+  const at = (x: number, z: number) => {
+    const ix = Math.round((x + 512) / 4), iz = Math.round((z + 512) / 4);
+    if (ix < 0 || iz < 0 || ix >= H || iz >= H) return -1;
+    return coarse[iz * H + ix];
+  };
+  for (let tries = 0; tries < 120 && ctx.coves.length < want && pts.length; tries++) {
+    const ci = pts[rng.int(pts.length)];
+    const ix0 = ci % H, iz0 = (ci / H) | 0;
+    const px = -512 + ix0 * 4, pz = -512 + iz0 * 4;
+    // outward normal from a wide gradient (smooth over coastline wiggles)
+    const gxv = coarse[ci + 2] - coarse[ci - 2], gzv = coarse[ci + 2 * H] - coarse[ci - 2 * H];
+    const gl = Math.sqrt(gxv * gxv + gzv * gzv);
+    if (gl < 1e-4) continue;
+    const ox = -gxv / gl, oz = -gzv / gl;
+    const len = rng.range(55, 105), wid = rng.range(11, 19);
+    // needs solid land around the head and on both flanks, and open sea outside
+    const hx = px - ox * len, hz = pz - oz * len;
+    if (at(hx - ox * 40, hz - oz * 40) < 0.12 || at(px + ox * 30, pz + oz * 30) > -0.02) continue;
+    const mx = px - ox * len * 0.5, mz = pz - oz * len * 0.5;
+    if (at(mx - oz * (wid + 34), mz + ox * (wid + 34)) < 0.05 || at(mx + oz * (wid + 34), mz - ox * (wid + 34)) < 0.05) continue;
+    if (ctx.coves.some((c) => (c.x - hx) * (c.x - hx) + (c.z - hz) * (c.z - hz) < 130 * 130)) continue;
+    if (Math.abs(hx) > 420 || Math.abs(hz) > 420) continue;
+    const bend = rng.range(-0.35, 0.35);
+    // carve: along-axis t from the head (0) to past the mouth (len + 20)
+    const r4 = Math.ceil((len + wid * 3 + 30) / 4);
+    const cx4 = Math.round((hx + 512) / 4), cz4 = Math.round((hz + 512) / 4);
+    for (let dz = -r4; dz <= r4; dz++)
+      for (let dx = -r4; dx <= r4; dx++) {
+        const jx = cx4 + dx, jz = cz4 + dz;
+        if (jx < 1 || jz < 1 || jx >= H - 1 || jz >= H - 1) continue;
+        const rx = -512 + jx * 4 - hx, rz = -512 + jz * 4 - hz;
+        const t = rx * ox + rz * oz;
+        if (t < -wid * 2 || t > len + 30) continue;
+        const tt = Math.max(0, Math.min(1, t / len));
+        const lat = (rx * oz - rz * ox) - bend * len * tt * (1 - tt) * 2;
+        // half width: round pool at the head, pinched middle, flaring mouth
+        const hw = wid * (1.25 - 0.45 * sin(Math.PI * Math.min(1, tt * 1.3)) + 0.5 * tt * tt);
+        const e = t < 0 ? Math.sqrt((t / (wid * 1.2)) * (t / (wid * 1.2)) + (lat / hw) * (lat / hw)) : Math.abs(lat) / hw;
+        const k = jz * H + jx;
+        const v = (e - 0.85) * 0.55;
+        if (v < coarse[k]) coarse[k] = v;
+      }
+    ctx.coves.push({ x: hx, z: hz, dx: ox, dz: oz, len, wid });
+  }
 }
 
 /** Remove land components smaller than minCells, and fill tiny enclosed ponds of sea. */
@@ -504,6 +579,31 @@ function detectCoastFeatures(ctx: Ctx, islets: { x: number; z: number; r: number
   }
   ctx.headlands = heads;
   ctx.islets = islets.filter((p) => ctx.land[(Math.round((p.z + 512) / CELL)) * N + Math.round((p.x + 512) / CELL)] === 1);
+}
+
+/**
+ * Coves get clear, boat-deep water: the seabed drops ~0.45 m per metre from
+ * the shore down to ~4.5 m, leaving a gently shelving beach at the head.
+ */
+export function coveBeds(ctx: Ctx): void {
+  const h = ctx.height;
+  for (const cv of ctx.coves) {
+    const R = cv.len + cv.wid * 3 + 30;
+    const i0 = Math.max(1, Math.floor((cv.x - R + 512) / CELL)), i1 = Math.min(N - 2, Math.ceil((cv.x + R + 512) / CELL));
+    const j0 = Math.max(1, Math.floor((cv.z - R + 512) / CELL)), j1 = Math.min(N - 2, Math.ceil((cv.z + R + 512) / CELL));
+    for (let iz = j0; iz <= j1; iz++)
+      for (let ix = i0; ix <= i1; ix++) {
+        const i = iz * N + ix;
+        if (ctx.land[i]) continue; // cove water per the coast mask, even where erosion silted it up
+        const rx = gx(ix) - cv.x, rz = gx(iz) - cv.z;
+        const t = rx * cv.dx + rz * cv.dz;
+        if (t < -cv.wid * 1.6 || t > cv.len + 25) continue;
+        if (Math.abs(rx * cv.dz - rz * cv.dx) > cv.wid * 2.6) continue;
+        const d = -ctx.coast[i];
+        const want = -Math.min(4.5, 0.3 + d * 0.45);
+        if (want < h[i]) h[i] = want;
+      }
+  }
 }
 
 /** A few sea stacks (faraglioni) off the cliffy coasts. */

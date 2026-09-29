@@ -14,7 +14,10 @@ type Rule = [PropKind, number, number, number]; // kind, expected per 2 m cell, 
 const RULES: Partial<Record<Biome, Rule[]>> = {
   [Biome.Meadow]: [[PropKind.GrassTuft, 3.2, 0.5, 1.0], [PropKind.Flowers, 0.45, 0.8, 1.3], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.RockSmall, 0.02, 0.6, 1.2]],
   [Biome.PalmGrove]: [[PropKind.GrassTuft, 2.2, 0.5, 1.0], [PropKind.Flowers, 0.1, 0.8, 1.2], [PropKind.Fern, 0.1, 0.7, 1.2], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.Bougainvillea, 0.004, 0.8, 1.2]],
-  [Biome.Jungle]: [[PropKind.Fern, 0.5, 0.8, 1.5], [PropKind.GrassTuft, 1.0, 0.6, 1.1], [PropKind.Bush, 0.08, 0.8, 1.5], [PropKind.Flowers, 0.04, 0.8, 1.2]],
+  // jungle floor: ferns and big-leaf understory everywhere, a few logs, hardly any grass
+  [Biome.Jungle]: [[PropKind.Fern, 0.75, 0.8, 1.6], [PropKind.Understory, 0.2, 0.8, 1.4], [PropKind.GrassTuft, 0.12, 0.6, 1.0], [PropKind.Bush, 0.05, 0.8, 1.4], [PropKind.Log, 0.004, 0.8, 1.3], [PropKind.RockSmall, 0.015, 0.6, 1.2], [PropKind.Flowers, 0.01, 0.8, 1.1]],
+  // Mediterranean woodland: maquis thickets, sparse ferns, dry grass in clearings, logs and stones
+  [Biome.Forest]: [[PropKind.Bush, 0.12, 0.7, 1.4], [PropKind.GrassTuft, 0.45, 0.5, 0.9], [PropKind.Fern, 0.08, 0.7, 1.1], [PropKind.Log, 0.005, 0.8, 1.3], [PropKind.RockSmall, 0.05, 0.6, 1.3], [PropKind.Flowers, 0.04, 0.7, 1.0]],
   [Biome.Scrub]: [[PropKind.GrassTuft, 1.4, 0.5, 0.9], [PropKind.Bush, 0.14, 0.6, 1.2], [PropKind.RockSmall, 0.08, 0.6, 1.3], [PropKind.Agave, 0.02, 0.7, 1.1], [PropKind.Flowers, 0.05, 0.7, 1.0]],
   [Biome.Riverbank]: [[PropKind.GrassTuft, 0.9, 0.8, 1.3], [PropKind.Fern, 0.25, 0.8, 1.3], [PropKind.Reed, 0.2, 0.8, 1.3], [PropKind.Flowers, 0.06, 0.8, 1.2]],
   [Biome.Village]: [[PropKind.GrassTuft, 0.25, 0.6, 1.0], [PropKind.Flowers, 0.12, 0.8, 1.2]],
@@ -25,7 +28,8 @@ const RULES: Partial<Record<Biome, Rule[]>> = {
 };
 
 /** Trees that get an undergrowth clump at their feet. */
-const TRUNKS = new Set<PropKind>([PropKind.Broadleaf, PropKind.UmbrellaPine, PropKind.Olive, PropKind.Palm, PropKind.PalmLeaning, PropKind.LemonTree, PropKind.Cypress, PropKind.Banana]);
+const TRUNKS = new Set<PropKind>([PropKind.Broadleaf, PropKind.UmbrellaPine, PropKind.Olive, PropKind.Palm, PropKind.PalmLeaning, PropKind.LemonTree, PropKind.Cypress, PropKind.Banana,
+  PropKind.JungleGiant, PropKind.TreeFern, PropKind.HolmOak, PropKind.Pine]);
 
 function hash(a: number, b: number, c: number): number {
   let h = Math.imul(a, 0x27d4eb2d) ^ Math.imul(b, 0x165667b1) ^ Math.imul(c + 0x9e3779b9, 0x85ebca77);
@@ -71,7 +75,8 @@ export function groundCover(world: World, amount = 1): PropSet[] {
   const seed = world.seed | 0;
   for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
     const k = j * N + i;
-    const rules = RULES[world.biome[k] as Biome];
+    const b = world.biome[k] as Biome;
+    const rules = RULES[b];
     if (!rules || blocked(k)) continue;
     const h = H[k];
     if (h < 0.4) continue;
@@ -84,8 +89,10 @@ export function groundCover(world: World, amount = 1): PropSet[] {
       // drifts: grass/flowers/ferns clump; moisture boosts ferns, dryness boosts grass
       let n = per * amount * (1 - sl * 0.8);
       if (kind === PropKind.Flowers) n *= Math.max(0, clump(x0, z0, 14, seed + 1) * 2.4 - 1.1);
+      else if (kind === PropKind.GrassTuft && b === Biome.Forest) n *= Math.max(0, clump(x0, z0, 16, seed + 6) * 2.6 - 1.2); // dry-grass clearings
       else if (kind === PropKind.GrassTuft) n *= 0.35 + clump(x0, z0, 9, seed + 2) * 1.3;
       else if (kind === PropKind.Fern) n *= (0.4 + m) * (0.3 + clump(x0, z0, 7, seed + 3) * 1.4);
+      else if (kind === PropKind.Understory) n *= Math.max(0, clump(x0, z0, 11, seed + 5) * 2.2 - 0.5);
       else if (kind === PropKind.Bush || kind === PropKind.Bougainvillea) n *= Math.max(0, clump(x0, z0, 22, seed + 4) * 3 - 1.2); // thickets
       const whole = Math.floor(n);
       const count = whole + (hash(i, j, seed + r * 131) < n - whole ? 1 : 0);
@@ -106,6 +113,7 @@ export function groundCover(world: World, amount = 1): PropSet[] {
       const gi = Math.round((tz + WORLD_HALF) / CELL) * N + Math.round((tx + WORLD_HALF) / CELL);
       if (gi < 0 || gi >= N * N || blocked(gi)) continue;
       const jungle = world.biome[gi] === Biome.Jungle || world.biome[gi] === Biome.Riverbank;
+      const forest = world.biome[gi] === Biome.Forest;
       const nClump = 2 + Math.floor(hash(q, ps.kind, seed + 77) * 3 * amount);
       for (let c = 0; c < nClump; c++) {
         const a = hash(q, c, seed + 91) * Math.PI * 2;
@@ -114,7 +122,9 @@ export function groundCover(world: World, amount = 1): PropSet[] {
         const g2 = Math.round((z + WORLD_HALF) / CELL) * N + Math.round((x + WORLD_HALF) / CELL);
         if (g2 < 0 || g2 >= N * N || blocked(g2)) continue;
         const pick = hash(c, q, seed + 95);
-        const kind = jungle ? (pick < 0.55 ? PropKind.Fern : PropKind.Bush) : pick < 0.45 ? PropKind.Bush : pick < 0.75 ? PropKind.GrassTuft : PropKind.Flowers;
+        const kind = jungle ? (pick < 0.5 ? PropKind.Fern : pick < 0.8 ? PropKind.Understory : PropKind.Bush)
+          : forest ? (pick < 0.55 ? PropKind.Bush : pick < 0.8 ? PropKind.Fern : PropKind.RockSmall)
+          : pick < 0.45 ? PropKind.Bush : pick < 0.75 ? PropKind.GrassTuft : PropKind.Flowers;
         push(kind, x, hAt(x, z) - 0.05, z, a * 3.1, 0.8 + hash(q, c, seed + 97) * 0.6);
       }
     }

@@ -25,6 +25,8 @@ export function trapsStage(ctx: Ctx, rng: Rng): void {
       backfill(ctx, trap, back);
     }
   }
+  // backfill can leave a narrow ledge at the foot of a tall cliff
+  fillSlots(ctx);
   // fresh water may have changed
   const wm = new Uint8Array(NN);
   for (let i = 0; i < NN; i++) wm[i] = ctx.water[i] !== NO_WATER ? 1 : 0;

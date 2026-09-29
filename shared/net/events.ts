@@ -15,7 +15,7 @@ export type NetEvent = SimEvent & { tick: number; seq?: number };
 export const EV_TYPES = [
   "shot", "hit", "shield", "vest", "splat", "splash", "projEnd", "elim", "respawn", "spawnChoices",
   "pickup", "pickupSpawn", "vehicleEnter", "vehicleExit", "vehicleBump", "vehicleReset", "zipStart", "zipEnd",
-  "wash", "move", "reload", "reloaded", "empty", "join", "leave", "matchEnd",
+  "wash", "move", "reload", "reloaded", "empty", "join", "leave", "matchEnd", "wear",
 ] as const;
 type EvType = SimEvent["type"];
 const EV_ID = new Map<EvType, number>(EV_TYPES.map((t, i) => [t as EvType, i]));
@@ -105,6 +105,7 @@ export function writeEvent(w: Writer, e: SimEvent & { seq?: number }): void {
       w.u8(e.pid).vari(e.zip);
       break;
     case "wash":
+    case "wear":
       w.u8(e.pid).u8(e.coats).u32(e.color);
       break;
     case "move":
@@ -185,6 +186,7 @@ export function readEvent(r: Reader, tick: number): NetEvent {
     case "zipEnd":
       return { type, pid: r.u8(), zip: r.vari(), tick };
     case "wash":
+    case "wear":
       return { type, pid: r.u8(), coats: r.u8(), color: r.u32(), tick };
     case "move": {
       const pid = r.u8(), fx = r.varu();

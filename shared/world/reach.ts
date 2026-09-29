@@ -33,7 +33,12 @@ export function computeReach(world: World): Reach {
   const maxDh = MAX_WALK_SLOPE * 2; // per 2 m cell
   const link = (i: number, j: number) => {
     if (!trav[j]) return false;
-    if (trav[i] === 2 && trav[j] === 2) return true;
+    if (trav[i] === 2 && trav[j] === 2) {
+      // you can't swim up a waterfall (and a big drop is not a way back up)
+      const si = world.water[i] !== NO_WATER && world.water[i] > 0 ? world.water[i] : 0;
+      const sj = world.water[j] !== NO_WATER && world.water[j] > 0 ? world.water[j] : 0;
+      return si - sj < 1.3 && sj - si < 1.3;
+    }
     if (trav[i] === 2 || trav[j] === 2) {
       // climbing out of the water: the bank must be low enough to scramble onto
       const wi = trav[i] === 2 ? i : j, li = wi === i ? j : i;
