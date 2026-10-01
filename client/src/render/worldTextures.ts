@@ -43,20 +43,29 @@ export function freshWaterAt(world: World, x: number, z: number): number {
   return world.water[gridIndex(x, z)];
 }
 
+// Mean ground colors (sRGB); the terrain shader adds photo-texture detail on top.
 const BIOME_COLOR: Record<number, number> = {
-  [Biome.DeepOcean]: 0xcbb98a,
+  [Biome.DeepOcean]: 0xb9a780,
   [Biome.Shallows]: WORLD_PALETTE.seabed,
   [Biome.Beach]: PALETTE.sand,
-  [Biome.PalmGrove]: 0xadc163,
-  [Biome.Jungle]: 0x587c38,
-  [Biome.Forest]: 0x84704a,
-  [Biome.Mangrove]: 0x71904a,
-  [Biome.Meadow]: 0xa9c466,
-  [Biome.Scrub]: 0xaeaa62,
-  [Biome.Rock]: WORLD_PALETTE.limestone,
-  [Biome.Cliff]: WORLD_PALETTE.limestoneWarm,
-  [Biome.Riverbank]: 0x8cb558,
-  [Biome.Village]: 0xd8bf94,
+  [Biome.PalmGrove]: 0x8c9a58,
+  [Biome.Jungle]: 0x4f6a32,
+  [Biome.Forest]: 0x76683f,
+  [Biome.Mangrove]: 0x5c7240,
+  [Biome.Meadow]: 0x7b9645,
+  [Biome.Scrub]: 0x8f8b56,
+  [Biome.Rock]: 0x6f7a48,
+  [Biome.Cliff]: 0x667345,
+  [Biome.Riverbank]: 0x5e8a3e,
+  [Biome.Village]: 0x9c8a6c,
+};
+
+/** Climate tint on vegetated ground: [target sRGB, amount]. */
+const CLIMATE_TINT: Record<string, [number, number]> = {
+  lush: [0x3f6a2c, 0.3],
+  tropical: [0x557a34, 0.12],
+  mediterranean: [0x9a9358, 0.22],
+  dry: [0xb0a062, 0.42],
 };
 
 function boxBlur(src: Float32Array, n: number, r: number): Float32Array {
@@ -138,6 +147,9 @@ export function buildWorldTextures(world: World): WorldTextures {
   const jf = new Float32Array(n), ff = new Float32Array(n);
   const tmp = new THREE.Color();
   const cache = new Map<number, THREE.Color>();
+  const dryC = new THREE.Color(0xa89c58), wetC = new THREE.Color(0x4a7a36);
+  const [climHex, climK] = CLIMATE_TINT[world.climate ?? "tropical"] ?? CLIMATE_TINT.tropical;
+  const climC = new THREE.Color(climHex);
   for (let i = 0; i < n; i++) {
     const b = world.biome[i];
     let col = cache.get(b);
@@ -152,14 +164,15 @@ export function buildWorldTextures(world: World): WorldTextures {
       // warm needle / oak-leaf duff: a touch greener where it's wetter
       tmp.lerp(new THREE.Color(0x707a44), Math.max(0, m0 - 0.45) * 0.7);
     }
-    const veg = b === Biome.Meadow || b === Biome.PalmGrove || b === Biome.Scrub || b === Biome.Riverbank || b === Biome.Mangrove;
+    const veg = b === Biome.Meadow || b === Biome.PalmGrove || b === Biome.Scrub || b === Biome.Riverbank || b === Biome.Mangrove || b === Biome.Rock || b === Biome.Cliff;
     if (veg) {
       const m = world.moisture[i] / 255;
-      // dry -> golden, wet -> deep lush
-      tmp.lerp(new THREE.Color(0xc2b35c), Math.max(0, 0.45 - m) * 0.9);
-      tmp.multiplyScalar(0.92 + (1 - m) * 0.12);
-      if (m > 0.6) tmp.lerp(new THREE.Color(0x578c42), (m - 0.6) * 0.4);
+      // dry -> straw, wet -> deep lush
+      tmp.lerp(dryC, Math.max(0, 0.45 - m) * 0.9);
+      tmp.multiplyScalar(0.94 + (1 - m) * 0.1);
+      if (m > 0.6) tmp.lerp(wetC, (m - 0.6) * 0.5);
     }
+    if (veg || b === Biome.Jungle) tmp.lerp(climC, climK);
     cr[i] = tmp.r; cg[i] = tmp.g; cb[i] = tmp.b;
     rock[i] = b === Biome.Rock || b === Biome.Cliff ? 1 : 0;
     sand[i] = b === Biome.Beach || b === Biome.Shallows || b === Biome.DeepOcean ? 1 : b === Biome.PalmGrove ? 0.35 : 0;

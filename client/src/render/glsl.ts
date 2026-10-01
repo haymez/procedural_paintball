@@ -60,6 +60,54 @@ vec3 skyColor(vec3 dir, float withSun) {
 }
 `;
 
+/**
+ * Fair-weather cumulus on a flat layer at uCloud.w meters: fbm coverage with
+ * domain warp, lit by a two-tap look toward the sun, silver lining when
+ * backlit, fading into the horizon haze. Returns premultiplied rgb + alpha.
+ * Needs SKY_FN and NOISE_FNS.
+ */
+export const CLOUD_DENSITY_FN = /* glsl */ `
+uniform vec4 uCloud; // x coverage 0..1, yz noise offset, w layer altitude (m)
+float cloudDensity(vec2 p) {
+  vec2 q = p * 0.000105 + uCloud.yz + uWind * uTime * 0.00006;
+  vec2 w = vec2(noiseT(q * 0.5).a, noiseT(q * 0.5 + 0.43).a) - 0.5;
+  q += w * 0.18;
+  float n = noiseT(q).r * 0.6 + noiseT(q * 2.31 + 0.21).r * 0.26 + noiseT(q * 5.7 + 0.67).r * 0.14;
+  float cov = mix(0.66, 0.44, uCloud.x);
+  return smoothstep(cov, cov + 0.09, n) * (0.55 + 0.45 * smoothstep(cov + 0.05, cov + 0.25, n));
+}
+// fraction of direct sun reaching world point w through the cloud layer
+float cloudShadow(vec3 w) {
+  if (uCloud.x <= 0.0) return 1.0;
+  vec2 p = w.xz + uSunDir.xz / max(uSunDir.y, 0.2) * (uCloud.w - w.y);
+  return 1.0 - cloudDensity(p) * 0.55;
+}
+`;
+export const CLOUD_FN = /* glsl */ `
+${CLOUD_DENSITY_FN}
+vec4 cloudLayer(vec3 ro, vec3 rd) {
+  if (rd.y < 0.015 || uCloud.x <= 0.0) return vec4(0.0);
+  float t = (uCloud.w - ro.y) / rd.y;
+  vec2 p = ro.xz + rd.xz * t;
+  float d = cloudDensity(p);
+  if (d < 0.004) return vec4(0.0);
+  vec2 sd = normalize(uSunDir.xz + vec2(1e-4)) * 380.0 / max(uSunDir.y + 0.25, 0.3);
+  float d1 = cloudDensity(p + sd * 0.5), d2 = cloudDensity(p + sd);
+  float shade = clamp(1.0 - (d1 * 0.5 + d2 * 0.5) * 0.7, 0.0, 1.0);
+  vec3 dark = mix(uSkyHorizon * 0.8, vec3(0.52, 0.56, 0.66), 0.55);
+  vec3 lit = vec3(1.02, 1.0, 0.97) * (0.8 + 0.3 * uSunColor);
+  // thick cores read as grey undersides from below
+  vec3 col = mix(dark, lit, (0.3 + 0.7 * shade) * (1.0 - d * 0.35 * rd.y));
+  float mu = max(dot(rd, uSunDir), 0.0);
+  col += uSunGlow * (pow(mu, 10.0) * 1.4 * (1.0 - d) + pow(mu, 3.0) * 0.2);
+  // thin edges let the sky through; far clouds dissolve into haze
+  float far = smoothstep(0.015, 0.22, rd.y);
+  col = mix(skyColor(rd, 0.0), col, 0.35 + 0.65 * far);
+  float a = clamp(d * 1.15, 0.0, 1.0) * mix(0.25, 1.0, far) * smoothstep(0.015, 0.06, rd.y);
+  return vec4(col * a, a);
+}
+`;
+
 /** Height-fog optical depth integrated along a ray (exponential falloff). */
 export const FOG_FN = /* glsl */ `
 uniform vec4 uFog; // x density at sea level, y height falloff, z min height, w start distance
@@ -91,9 +139,9 @@ void RE_Direct_Toon(const in IncidentLight directLight, const in vec3 geometryPo
   reflectedLight.directDiffuse += gTransl * directLight.color * pow(back, 4.0) * 0.25 * max(-nl + 0.3, 0.0);
   if (gSpec > 0.0) {
     vec3 h = normalize(directLight.direction + geometryViewDir);
-    float s = pow(max(dot(geometryNormal, h), 0.0), gShine);
-    s = smoothstep(0.35, 0.6, s); // toon highlight
-    reflectedLight.directSpecular += directLight.color * s * gSpec * step(0.0, nl);
+    // normalized Blinn-Phong (no toon threshold): broad and soft on wet sand, tight on glossy paint
+    float s = pow(max(dot(geometryNormal, h), 0.0), gShine) * (gShine + 8.0) / 25.0;
+    reflectedLight.directSpecular += directLight.color * s * gSpec * 0.25 * smoothstep(0.0, 0.2, nl);
   }
 }
 void RE_IndirectDiffuse_Toon(const in vec3 irradiance, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight) {

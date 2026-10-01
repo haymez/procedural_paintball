@@ -3,23 +3,31 @@
 //   sway    0 at the base .. 1 at the tip (bends with the wind)
 //   flutter leaf-level jitter amount
 //   tint    1 = recolored per instance (flower petals)
+// and tuv = (u, v, layer, flags) addressing the foliage textures (atlas.ts):
+//   layer  < 0 untextured, 0..15 bark array layer, >= 16 leaf atlas page
+//   flags  1 = card with bent (crown) normals: light both faces the same way
 import * as THREE from "three";
 
 export type Wind = [number, number, number];
+/** u, v, layer, flags */
+export type UV = [number, number, number, number?];
+const NO_UV: UV = [0, 0, -1, 0];
 
 export class Builder {
   pos: number[] = [];
   nrm: number[] = [];
   col: number[] = [];
   wind: number[] = [];
+  tuv: number[] = [];
   idx: number[] = [];
 
-  vertex(p: THREE.Vector3, n: THREE.Vector3, c: THREE.Color, w: Wind): number {
+  vertex(p: THREE.Vector3, n: THREE.Vector3, c: THREE.Color, w: Wind, uv: UV = NO_UV): number {
     const i = this.pos.length / 3;
     this.pos.push(p.x, p.y, p.z);
     this.nrm.push(n.x, n.y, n.z);
     this.col.push(c.r, c.g, c.b);
     this.wind.push(w[0], w[1], w[2]);
+    this.tuv.push(uv[0], uv[1], uv[2], uv[3] ?? 0);
     return i;
   }
 
@@ -69,23 +77,33 @@ export class Builder {
   /**
    * Tapered tube along a polyline. radius(t) and color(t) with t in 0..1.
    */
-  tube(points: THREE.Vector3[], radius: (t: number) => number, sides: number, color: (t: number, a: number) => THREE.Color, wind: (t: number, p: THREE.Vector3) => Wind, capTop = true) {
+  tube(points: THREE.Vector3[], radius: (t: number) => number, sides: number, color: (t: number, a: number) => THREE.Color, wind: (t: number, p: THREE.Vector3) => Wind, capTop = true,
+    tex?: { layer: number; around: number; perMeter: number; v0?: number }) {
     const rings: number[][] = [];
+    let along = tex?.v0 ?? 0;
     const up = new THREE.Vector3(0, 1, 0);
     const tan = new THREE.Vector3(), side = new THREE.Vector3(), bin = new THREE.Vector3(), p = new THREE.Vector3(), n = new THREE.Vector3();
     for (let i = 0; i < points.length; i++) {
       const t = i / (points.length - 1);
       const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)];
       tan.subVectors(b, a).normalize();
-      side.crossVectors(tan, Math.abs(tan.y) > 0.95 ? new THREE.Vector3(1, 0, 0) : up).normalize();
+      if (i === 0) side.crossVectors(tan, Math.abs(tan.y) > 0.95 ? new THREE.Vector3(1, 0, 0) : up).normalize();
+      else {
+        // parallel transport: keep the previous ring's orientation (no twist where the tube turns vertical)
+        side.addScaledVector(tan, -side.dot(tan));
+        if (side.lengthSq() < 1e-8) side.crossVectors(tan, Math.abs(tan.y) > 0.95 ? new THREE.Vector3(1, 0, 0) : up);
+        side.normalize();
+      }
       bin.crossVectors(side, tan).normalize();
       const r = radius(t);
+      if (i > 0) along += points[i].distanceTo(points[i - 1]) * (tex?.perMeter ?? 0);
       const ring: number[] = [];
       for (let k = 0; k <= sides; k++) {
         const ang = (k / sides) * Math.PI * 2;
         n.copy(side).multiplyScalar(Math.cos(ang)).addScaledVector(bin, Math.sin(ang));
         p.copy(points[i]).addScaledVector(n, r);
-        ring.push(this.vertex(p, n, color(t, ang), wind(t, points[i])));
+        const uv: UV = tex ? [(k / sides) * tex.around, along, tex.layer, 0] : NO_UV;
+        ring.push(this.vertex(p, n, color(t, ang), wind(t, points[i]), uv));
       }
       rings.push(ring);
     }
@@ -96,7 +114,7 @@ export class Builder {
     }
     if (capTop) {
       const last = points[points.length - 1];
-      const c = this.vertex(last, tan.clone(), color(1, 0), wind(1, last));
+      const c = this.vertex(last, tan.clone(), color(1, 0), wind(1, last), tex ? [0, along, tex.layer, 0] : NO_UV);
       const r = rings[rings.length - 1];
       for (let k = 0; k < sides; k++) this.tri(r[k], r[k + 1], c);
     }
@@ -113,7 +131,7 @@ export class Builder {
     lateral: THREE.Vector3,
     color: (t: number, edge: number) => THREE.Color,
     wind: (t: number) => Wind,
-    opts: { fold?: number; serrate?: number; normalUp?: number } = {},
+    opts: { fold?: number; serrate?: number; normalUp?: number; uv?: (t: number, edge: number) => UV } = {},
   ) {
     const fold = opts.fold ?? 0;
     const serr = opts.serrate ?? 0;
@@ -134,10 +152,11 @@ export class Builder {
       const L = c.clone().addScaledVector(lat, -w).addScaledVector(nrm, -fold * w);
       const R = c.clone().addScaledVector(lat, w).addScaledVector(nrm, -fold * w);
       const wv = wind(t);
+      const uvf = opts.uv;
       const cur = [
-        this.vertex(L, nrm, color(t, 1), wv),
-        this.vertex(c.clone(), nrm, color(t, 0), wv),
-        this.vertex(R, nrm, color(t, 1), wv),
+        this.vertex(L, nrm, color(t, 1), wv, uvf ? uvf(t, -1) : NO_UV),
+        this.vertex(c.clone(), nrm, color(t, 0), wv, uvf ? uvf(t, 0) : NO_UV),
+        this.vertex(R, nrm, color(t, 1), wv, uvf ? uvf(t, 1) : NO_UV),
       ];
       if (prev) {
         this.quad(prev[0], cur[0], cur[1], prev[1]);
@@ -153,6 +172,7 @@ export class Builder {
     g.setAttribute("normal", new THREE.Float32BufferAttribute(this.nrm, 3));
     g.setAttribute("color", new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute("wind", new THREE.Float32BufferAttribute(this.wind, 3));
+    g.setAttribute("tuv", new THREE.Float32BufferAttribute(this.tuv, 4));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     return g;

@@ -7,7 +7,7 @@ import { buildCollision, caveSdf, groundBelow, sdf, type CollisionWorld } from "
 import { CAVE_FLOOR } from "../collide";
 import type { Ctx } from "../context";
 import { gx, N, NN, sample, toI } from "../grid";
-import { Biome, NO_WATER, PickupKind, VehicleKind, type PickupSpawn, type World } from "../types";
+import { Biome, NO_WATER, PickupKind, PROP_STRIDE, PropKind, VehicleKind, type PickupSpawn, type World } from "../types";
 import { BLOCK_CAVE, BLOCK_DOCK, BLOCK_STRUCT } from "./sites";
 import { caveAt, computeReach } from "../reach";
 import { zipCableY, ZIP_RIDER_FEET } from "../zipline";
@@ -32,6 +32,7 @@ interface P2 {
 
 export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
   const h = ctx.height;
+  plantLandmarkTrees(ctx);
   const world = worldFromCtx(ctx);
   const cw = buildCollision(world);
 
@@ -64,7 +65,8 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     }
   };
   // avoid spawning on top of structures' doorsteps: seed distances with site centers
-  for (const s of ctx.sites) updateMin(s.x, s.z);
+  // (the village is a whole town, not a doorstep: its open streets and green may hold spawns)
+  for (const s of ctx.sites) if (s.kind !== "village") updateMin(s.x, s.z);
   const taken = new Uint8Array(cand.length);
   for (let n = 0; n < spawnTarget && cand.length > 0; n++) {
     let bk = -1, bv = -1;
@@ -79,8 +81,14 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
     if (bk < 0) break;
     taken[bk] = 1;
     const i = cand[bk];
-    const x = gx(i % N) + srng.range(-1, 1), z = gx((i / N) | 0) + srng.range(-1, 1);
-    const y = sample(h, x, z);
+    let x = gx(i % N) + srng.range(-1, 1), z = gx((i / N) | 0) + srng.range(-1, 1);
+    let y = sample(h, x, z);
+    if (y < 0.9) {
+      // the jitter slid down a bank toward the water: stand on the sample itself
+      x = gx(i % N);
+      z = gx((i / N) | 0);
+      y = h[i];
+    }
     if (!clear(x, y, z, 0.8) || sdf(cw, x, y + 2.9, z) < 1.8 || caveSdf(world, x, y + 1, z) < 0.5) {
       n--;
       minD[bk] = 0;
@@ -122,6 +130,7 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
   // structure spots
   for (const s of ctx.sites) {
     for (const sp of s.spots) {
+      if (sp.tag === "tree" || sp.tag === "gate") continue;
       const y = snap(sp.x, sp.y, sp.z);
       if (sp.tag === "top") addP(riskyKind(), sp.x, y, sp.z);
       else if (sp.tag === "dockEnd") addP(PickupKind.Snorkel, sp.x, y, sp.z);
@@ -130,6 +139,11 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
   }
   // caves: upgrade in chambers, ammo mid-tunnel
   for (const c of ctx.caves) {
+    if (c.spots) {
+      // the cave stage suggests spots on the real floor (main hall, dead-end rooms, tunnels)
+      for (const s of c.spots) addP(s.upgrade ? riskyKind() : PickupKind.Ammo, s.x, s.y + 0.05, s.z);
+      continue;
+    }
     for (let k = 0; k < c.nodes.length; k++) {
       const n = c.nodes[k];
       if (n.r >= 7) addP(riskyKind(), n.x, n.y - 0.45 * n.r + 0.05, n.z);
@@ -286,6 +300,36 @@ export function gameplayStage(ctx: Ctx, rng: Rng): CollisionWorld {
   return cw;
 }
 
+/**
+ * The shade tree on the village green (site spots tagged "tree"): a banyan-like
+ * emergent tree on lush / tropical islands, an umbrella pine elsewhere. It is a
+ * collider prop, so it is planted here (after the prop scatter, before the
+ * collision world is built) and skipDecor worlds get it too.
+ */
+function plantLandmarkTrees(ctx: Ctx): void {
+  const pac = ctx.ch.climate === "lush" || ctx.ch.climate === "tropical";
+  const kind = pac ? PropKind.JungleGiant : PropKind.UmbrellaPine;
+  const scale = pac ? 0.95 : 1.35;
+  const add: number[] = [];
+  for (const s of ctx.sites)
+    for (const sp of s.spots) {
+      if (sp.tag !== "tree") continue;
+      add.push(sp.x, sample(ctx.height, sp.x, sp.z) - 0.12 * scale, sp.z, (s.rot * 1.7) % 6.283185307179586, scale);
+    }
+  if (!add.length) return;
+  let set = ctx.props.find((p) => p.kind === kind);
+  if (!set) {
+    set = { kind, count: 0, data: new Float32Array(0) };
+    ctx.props.push(set);
+    ctx.props.sort((a, b) => a.kind - b.kind);
+  }
+  const data = new Float32Array(set.data.length + add.length);
+  data.set(set.data);
+  data.set(add, set.data.length);
+  set.data = data;
+  set.count = data.length / PROP_STRIDE;
+}
+
 /** Land-only BFS distance (m, 8-neighbour) from a start cell. */
 function landDistance(ctx: Ctx, start: number, out: Float32Array, queue: Int32Array): void {
   out.fill(1e9);
@@ -409,7 +453,8 @@ function gyroPass(ctx: Ctx, cw: CollisionWorld, rng: Rng, landOk: (i: number) =>
       const i = iz * N + ix;
       if (!landOk(i) || h[i] < 2) continue;
       const b = ctx.biome[i];
-      const bonus = b === Biome.Meadow ? 1 : b === Biome.Village ? 0.8 : b === Biome.Scrub || b === Biome.PalmGrove ? 0.4 : b === Biome.Beach ? 0.2 : -1;
+      // (not in town: streets are lined with buildings and lamp posts)
+      const bonus = b === Biome.Meadow ? 1 : b === Biome.Scrub || b === Biome.PalmGrove ? 0.4 : b === Biome.Beach ? 0.2 : -1;
       if (bonus < 0 && !anyBiome) continue;
       // flat neighbourhood (±6 m)
       let sl = 0;

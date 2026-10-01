@@ -35,9 +35,17 @@ function bodyClearance(p: PlayerState): number {
   return m;
 }
 
-/** A spot on dry, fairly flat ground. */
+/** A spot on dry, fairly flat ground with open air 8 m to +Z (tests put a second player there). */
+let flatCache: { x: number; y: number; z: number } | null = null;
 function flatSpot(): { x: number; y: number; z: number } {
-  for (const s of world.spawns) {
+  if (flatCache) return flatCache;
+  // spawns first, then a coarse scan of the island
+  const cands: { x: number; y: number; z: number }[] = [...world.spawns];
+  for (let z = -300; z <= 300; z += 9) for (let x = -300; x <= 300; x += 9) {
+    const h = terrainHeight(world, x, z);
+    if (h > 1.5) cands.push({ x, y: h, z });
+  }
+  for (const s of cands) {
     const g = probeGround(env, s.x, s.y + 2, s.z, 6);
     if (g === BLOCKED || g === -Infinity) continue;
     if (waterAt(env, s.x, s.z) !== NO_WATER_Y) continue;
@@ -46,7 +54,9 @@ function flatSpot(): { x: number; y: number; z: number } {
       const g2 = probeGround(env, s.x + dx, g + 4, s.z + dz, 8);
       if (g2 === BLOCKED || g2 === -Infinity || Math.abs(g2 - g) > 1.2) ok = false;
     }
-    if (ok) return { x: s.x, y: g, z: s.z };
+    // nothing (tree, wall) between here and 8 m ahead at chest height
+    for (let t = 0; t <= 9 && ok; t += 0.25) for (const yy of [0.9, 1.45]) if (sdf(env.cw, s.x, g + yy, s.z + t) < 0.3) ok = false;
+    if (ok) return (flatCache = { x: s.x, y: g, z: s.z });
   }
   throw new Error("no flat spot");
 }

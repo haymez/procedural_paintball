@@ -152,6 +152,37 @@ describe.each(SEEDS)("island %i invariants", (seed) => {
         const hd = Math.sqrt((A.x - B.x) ** 2 + (A.z - B.z) ** 2);
         expect(Math.abs(fa - fb) / Math.max(hd, 1)).toBeLessThan(0.62);
       }
+      // a network, not a stub: every node connected, several ways in, a loop once there are three or more
+      const adj: number[][] = c.nodes.map(() => []);
+      for (const [a, b] of c.edges) { adj[a].push(b); adj[b].push(a); }
+      const seen = new Set([0]);
+      const q = [0];
+      while (q.length) for (const m of adj[q.pop()!]) if (!seen.has(m)) { seen.add(m); q.push(m); }
+      expect(seen.size).toBe(c.nodes.length);
+      const walk = c.entrances.filter((e) => !e.sky);
+      expect(walk.length).toBeGreaterThanOrEqual(2);
+      if (walk.length >= 3) expect(c.edges.length - c.nodes.length + 1, "loops").toBeGreaterThanOrEqual(1);
+      expect(c.nodes.filter((n) => n.r >= 7).length).toBeGreaterThanOrEqual(2);
+      // skylights: a shaft from a chamber's roof up through the surface
+      for (const e of c.entrances.filter((q) => q.sky)) {
+        const s = (c.shafts ?? []).find((q) => Math.hypot(q.x - e.x, q.z - e.z) < 0.5);
+        expect(s).toBeDefined();
+        expect(caveSdf(w, s!.x, s!.y0, s!.z)).toBeLessThan(0);
+        expect(s!.y1).toBeGreaterThan(terrainHeight(w, s!.x, s!.z));
+      }
+      // never under fresh water (the sim would call it flooded); dry floors except on a sea grotto's approach
+      const grotto = c.entrances.find((e) => e.y < 0);
+      for (const n of c.nodes) {
+        const i = Math.round((n.z + 512) / 2) * 513 + Math.round((n.x + 512) / 2);
+        expect(w.water[i]).toBe(NO_WATER);
+        const fy = n.r >= 7 ? n.y - 0.45 * n.r : n.y - CAVE_FLOOR * n.r;
+        if (fy < 0.5) expect(!!grotto && Math.hypot(grotto.x - n.x, grotto.z - n.z) < 90).toBe(true);
+      }
+      // pickup spots sit on the real floor with headroom
+      for (const p of c.spots ?? []) {
+        expect(sdf(cw(seed), p.x, p.y + 0.6, p.z)).toBeGreaterThan(0.3);
+        expect(Math.abs(groundBelow(cw(seed), p.x, p.y + 1, p.z) - p.y)).toBeLessThan(0.2);
+      }
     }
   });
 
@@ -282,9 +313,11 @@ describe("collision API", () => {
   it("structures block rays and hold you up", () => {
     const w = world(3);
     const c = cw(3);
-    const st = w.structures.find((s) => s.solids.some((o) => o.shape === "box" && o.hy > 1.2 && o.hx > 1));
+    // a free-standing wall (not a plinth buried in the ground)
+    const wallish = (o: (typeof w.structures)[0]["solids"][0]) => o.shape === "box" && o.hy > 1.2 && o.hx > 1 && o.cy - o.hy > terrainHeight(w, o.cx, o.cz) - 0.3;
+    const st = w.structures.find((s) => s.solids.some(wallish));
     expect(st).toBeDefined();
-    const o = st!.solids.find((o) => o.shape === "box" && o.hy > 1.2 && o.hx > 1)!;
+    const o = st!.solids.find(wallish)!;
     // shoot at the wall center from 10 m away along its local Z axis
     const nz = Math.cos(o.rotY), nx = Math.sin(o.rotY);
     const d0 = o.hz + 1.2;

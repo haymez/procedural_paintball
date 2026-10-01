@@ -91,6 +91,7 @@ export function computeReach(world: World): Reach {
   for (const c of world.caves) {
     let first = -1;
     for (const e of c.entrances) {
+      if (e.sky) continue; // a skylight is a one-way drop in, not a way out
       const l = labelNear(e.x + e.dx * 4, e.z + e.dz * 4, 4);
       if (l < 0) continue;
       if (first < 0) first = find(l);

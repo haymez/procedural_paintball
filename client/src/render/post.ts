@@ -6,7 +6,7 @@
 //  - inside caves: dark cool fog,
 //  - adds bloom, tone maps (Khronos PBR Neutral), warm grade, vignette, dither.
 import * as THREE from "three";
-import { ENV_PARS, FOG_FN, NOISE_FNS, SKY_FN } from "./glsl";
+import { CLOUD_FN, ENV_PARS, FOG_FN, NOISE_FNS, SKY_FN } from "./glsl";
 
 export interface PostOptions {
   msaa: number;
@@ -118,8 +118,8 @@ export function createPost(renderer: THREE.WebGLRenderer, env: Record<string, TH
     uUnderwater: { value: 0 }, // 0..1
     uWaterLevel: { value: 0 },
     uCave: { value: 0 }, // 0..1 camera inside cave
-    uSatBoost: { value: 1.03 },
-    uVignette: { value: 0.22 },
+    uSatBoost: { value: 1.0 },
+    uVignette: { value: 0.16 },
     uResolution: { value: new THREE.Vector2(w, h) },
   };
   const compMat = new THREE.ShaderMaterial({
@@ -140,6 +140,7 @@ export function createPost(renderer: THREE.WebGLRenderer, env: Record<string, TH
       ${ENV_PARS}
       ${NOISE_FNS}
       ${SKY_FN}
+      ${CLOUD_FN}
       ${FOG_FN}
       in vec2 vUv; in vec3 vRay; out vec4 o;
       uniform sampler2D tColor, tDepth, tBloom1, tBloom2;
@@ -186,6 +187,10 @@ export function createPost(renderer: THREE.WebGLRenderer, env: Record<string, TH
         vec3 fogSkyDir = normalize(vec3(rd.x, max(rd.y, 0.0) * 0.35, rd.z));
         if (isSky) {
           col = rd.y < 0.0 ? skyColor(fogSkyDir, 0.0) : skyColor(rd, 1.0);
+          if (rd.y > 0.0 && uUnderwater < 0.5) {
+            vec4 cl = cloudLayer(uCamPos, rd);
+            col = col * (1.0 - cl.a) + cl.rgb;
+          }
         } else {
           vec4 vp = uInvProj * vec4(uv * 2.0 - 1.0, ndcZ, 1.0);
           vp /= vp.w;
@@ -203,8 +208,8 @@ export function createPost(renderer: THREE.WebGLRenderer, env: Record<string, TH
           }
           // caves: cool darkness swallows distance
           if (uCave > 0.0) {
-            float cf = (1.0 - exp(-dist * 0.035)) * (1.0 - smoothstep(35.0, 70.0, dist)); // only cave-scale distances
-            col = mix(col, vec3(0.012, 0.018, 0.03), cf * uCave * 0.85);
+            float cf = (1.0 - exp(-dist * 0.022)) * (1.0 - smoothstep(45.0, 80.0, dist)); // only cave-scale distances
+            col = mix(col, vec3(0.016, 0.02, 0.03), cf * uCave * 0.75);
           }
           if (uUnderwater > 0.0) {
             float depthBelow = max(uWaterLevel - uCamPos.y, 0.0);
@@ -230,8 +235,10 @@ export function createPost(renderer: THREE.WebGLRenderer, env: Record<string, TH
         // grade: saturation, lifted cool shadows, warm highlights
         float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
         col = mix(vec3(l), col, uSatBoost);
-        col = mix(col, col * vec3(0.96, 1.0, 1.06), (1.0 - smoothstep(0.0, 0.35, l)) * 0.6);
-        col = mix(col, col * vec3(1.03, 1.0, 0.95), smoothstep(0.5, 1.0, l) * 0.5);
+        col = mix(col, col * vec3(0.97, 1.0, 1.04), (1.0 - smoothstep(0.0, 0.35, l)) * 0.5);
+        col = mix(col, col * vec3(1.02, 1.0, 0.97), smoothstep(0.5, 1.0, l) * 0.5);
+        // gentle filmic contrast
+        col = mix(col, col * col * (3.0 - 2.0 * col), 0.14);
         col = max(col, vec3(0.0));
         // vignette
         vec2 q = vUv - 0.5;

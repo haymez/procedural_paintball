@@ -1,7 +1,10 @@
 # Isola — agent guide
 
 A browser third-person paintball shooter on a procedurally generated tropical
-island, styled after Pixar's *Luca* (warm, saturated, soft, low-detail).
+island. The world aims at stylized realism: a lush volcanic Pacific island
+(Kauai / Moorea) with CC0 photo textures, natural greens, realistic water and
+sky, realism applied within each climate. The characters keep the soft
+Pixar *Luca* look.
 Free-for-all, up to 20 players per room, bots optional, multiplayer through
 Cloudflare Durable Objects. Local-only for now (`npm run dev`).
 
@@ -49,7 +52,14 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
   dry), coast style (beaches / cliffs / calanque coves with jetties and moored
   speedboats / mixed) and relief (low and rolling … tall). Forests grow in
   contiguous stands (rainforest `Jungle`, holm-oak/pine `Forest`).
-- **Time of day** from the seed, always sunny (8:00–17:30).
+- **Places**: a living Polynesian / plantation town on every island (homes
+  with lanai, store, hotel, church, thatched hale, green, sometimes a
+  ballfield; shared/world/gen/village.ts), Pacific ruins (sugar mill, heiau,
+  plantation manor; ruins.ts) plus lighthouse, boathouse, watchtower.
+  Caves are multi-chamber networks with loops, 2–4 entrances, skylights and
+  rock cover (pillars, slabs, low walls) inside.
+- **Time of day** from the seed, always sunny (8:00–17:30), fair-weather
+  cumulus with moving cloud shadows.
 - **Audio**: CC0 SFX, biome-aware ambience, menu-only music.
 
 ## Architecture
@@ -119,3 +129,11 @@ numbers are meaningful. Put screenshots in `shots/` (gitignored).
 generation < 4 s in the browser (in a Web Worker), < 3 s with `skipDecor`.
 
 `window.__ready/__stats/__debug` are declared once in tools/globals.d.ts; do not redeclare them.
+
+## Textures
+
+CC0 images live in `public/tex/<asset_id>/` (credits in `public/tex/CREDITS.md`).
+Ground/rock sets are packed as `<id>_c.jpg` (sRGB color) and `<id>_nh.jpg`
+(R,G = OpenGL normal xy, B = height). Load everything through
+`client/src/render/assets.ts` so `WorldView.loading` (and `__ready`) waits
+for it.

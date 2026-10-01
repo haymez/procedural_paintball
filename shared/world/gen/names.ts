@@ -1,5 +1,5 @@
 // Stage 11: names. An Italian-flavoured island name and landmark labels for
-// peaks, bays, coves, beaches, falls, caves, lakes, ruins and the hamlet.
+// peaks, bays, coves, beaches, falls, caves, lakes, ruins and the village.
 import type { Rng } from "../../math/rng";
 import type { Ctx } from "../context";
 import { N, toI } from "../grid";
@@ -96,8 +96,18 @@ export function namesStage(ctx: Ctx, rng: Rng): void {
         kind = "point";
         break;
       case "hamlet":
-        nm = uniq(() => rng.pick(["Borgo ", "Porto ", "Villaggio "]) + rng.pick(["Rosa", "Vecchio", "dei Pescatori", "Fiorito", "Marino", "Perduto", "San Rocco"]));
+      case "village":
+        nm = uniq(() => rng.pick(["Borgo ", "Paese ", "Villaggio ", "Porto "]) + rng.pick(["delle Canne", "dello Zucchero", "Vecchio", "dei Pescatori", "Fiorito", "delle Palme", "del Mercato", "San Rocco", "Marino", "dei Coloni"]));
         kind = "village";
+        break;
+      case "heiau":
+        nm = uniq(() => "Tempio " + rng.pick(["degli Antenati", "di Pietra Nera", "del Sole", "dei Re", "Antico", "della Marea", "del Vulcano"]));
+        break;
+      case "mill":
+        nm = uniq(() => (rng.chance(0.6) ? "Zuccherificio " + rng.pick(["Vecchio", "Abbandonato", "del Capo", "delle Canne", "Bruciato"]) : rng.pick(["Mulino dello Zucchero", "Mulino delle Canne", "Vecchio Mulino"])));
+        break;
+      case "manor":
+        nm = uniq(() => rng.pick(["Villa ", "Casa "]) + rng.pick(["della Piantagione", "dei Coloni", "Abbandonata", "Bruciata", "del Console", "delle Canne"]));
         break;
       case "chapel":
         nm = uniq(() => "Chiesetta di " + rng.pick(SAINTS));

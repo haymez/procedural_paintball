@@ -22,6 +22,7 @@ import { createWater } from "./water";
 import { createProps } from "./props/props";
 import { createStructures } from "./structures";
 import { createCaves, type CaveSdf } from "./caves";
+import { assetsPending } from "./assets";
 
 export type { Quality, QualityPreset } from "./quality";
 export { createWorldRenderer, QUALITY } from "./quality";
@@ -171,7 +172,7 @@ function* buildWorldView(renderer: THREE.WebGLRenderer, world: World, opts: Worl
   scene.add(terrain.group);
   lap("terrain");
 
-  const clouds = createClouds(world.seed, U, q.clouds);
+  const clouds = createClouds(world, U, q.clouds > 0 ? 1 : 0);
   scene.add(clouds.mesh);
   lap("clouds");
   yield "water";
@@ -181,7 +182,7 @@ function* buildWorldView(renderer: THREE.WebGLRenderer, world: World, opts: Worl
   lap("water");
   yield "props";
 
-  const props = createProps(world, U, { density: q.foliageDensity, distance: q.foliageDistance, shadowDistance: q.shadowDistance, groundCover: q.groundCover });
+  const props = createProps(world, U, { density: q.foliageDensity, distance: q.foliageDistance, shadowDistance: q.shadowDistance, groundCover: q.groundCover, msaa: q.msaa, textures: tex, paint: paint.uniforms, ground: terrain.ground });
   scene.add(props.group);
   lap("props");
   yield "structures";
@@ -216,7 +217,7 @@ function* buildWorldView(renderer: THREE.WebGLRenderer, world: World, opts: Worl
     scene,
     env,
     get underwater() { return underwater; },
-    get loading() { return caves.pending; },
+    get loading() { return caves.pending || assetsPending() > 0; },
     finishLoading() { caves.finish(); },
     stepLoading(ms) { caves.step(ms); },
     get cavesLeft() { return caves.left; },

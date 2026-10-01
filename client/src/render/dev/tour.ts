@@ -1,6 +1,7 @@
 // Preset viewpoints derived from the world data (works for fixtures and the
-// real generator): beach, jungle, peak overlook, river valley, cave, ruin.
-import { Biome, CELL, GRID_RES, WORLD_HALF, type World } from "../../../../shared/world/types";
+// real generator): beach, jungle, peak overlook, river valley, cave, ruin,
+// ..., village street, village from above.
+import { Biome, CELL, GRID_RES, StructureKind, WORLD_HALF, type World } from "../../../../shared/world/types";
 import { heightAt } from "../worldTextures";
 
 export interface Viewpoint { name: string; x: number; y: number; z: number; yaw: number; pitch: number }
@@ -46,21 +47,23 @@ export function tourViewpoints(world: World): Viewpoint[] {
     const bx = a.x - (b.x - a.x) * 0.8, bz = a.z - (b.z - a.z) * 0.8;
     out.push({ name: "river valley", x: bx, y: Math.max(a.y, heightAt(world, bx, bz)) + 6, z: bz, yaw: yawTo(bx, bz, b.x, b.z), pitch: -10 });
   } else out.push({ name: "river valley (none)", x: px / 2, y: 40, z: pz / 2, yaw: 0, pitch: -10 });
-  // 4 cave interior
+  // 4 cave interior: the biggest hall, from one end looking across its rock cover
   let bestCave: { c: typeof world.caves[0]; i: number } | null = null;
-  for (const c of world.caves) c.nodes.forEach((n, i) => { if (n.y > 1 && (!bestCave || n.r > bestCave.c.nodes[bestCave.i].r)) bestCave = { c, i }; });
+  for (const c of world.caves) c.nodes.forEach((n, i) => { if (n.y > 1 && n.r >= 7 && (!bestCave || n.r > bestCave.c.nodes[bestCave.i].r)) bestCave = { c, i }; });
   if (bestCave) {
     const { c, i } = bestCave as { c: typeof world.caves[0]; i: number };
     const a = c.nodes[i];
+    // the rest of the hall (chambers joined to this one), else the first doorway
+    const mates = c.edges.filter(([p, q]) => (p === i || q === i) && c.nodes[p === i ? q : p].r >= 7).map(([p, q]) => c.nodes[p === i ? q : p]);
     const e = c.edges.find(([p, q]) => p === i || q === i);
-    const b = e ? c.nodes[e[0] === i ? e[1] : e[0]] : a;
-    // stand in the chamber on the far side, looking back toward the tunnel mouth
-    const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
-    const cx = a.x - (dx / l) * a.r * 0.5, cz = a.z - (dz / l) * a.r * 0.5;
-    out.push({ name: "cave interior", x: cx, y: a.y - 0.45 * a.r + 2.2, z: cz, yaw: yawTo(cx, cz, b.x, b.z) - 15, pitch: 2 });
+    const tgt = mates.length ? { x: mates.reduce((s, m) => s + m.x, 0) / mates.length, z: mates.reduce((s, m) => s + m.z, 0) / mates.length } : e ? c.nodes[e[0] === i ? e[1] : e[0]] : a;
+    const dx = tgt.x - a.x, dz = tgt.z - a.z, l = Math.hypot(dx, dz) || 1;
+    const cx = a.x - (dx / l) * a.r * 0.6, cz = a.z - (dz / l) * a.r * 0.6;
+    out.push({ name: "cave interior", x: cx, y: a.y - 0.45 * a.r + 2.2, z: cz, yaw: yawTo(cx, cz, tgt.x, tgt.z), pitch: 1 });
   } else out.push({ name: "cave (none)", x: 0, y: 30, z: 0, yaw: 0, pitch: -10 });
-  // 5 ruin close-up
-  const st = world.structures.find((s) => s.kind === 1 || s.kind === 0) ?? world.structures[0];
+  // 5 ruin close-up (sugar mill / heiau / plantation house, else any old cottage)
+  const st = world.structures.find((s) => s.kind === StructureKind.SugarMill || s.kind === StructureKind.Heiau || s.kind === StructureKind.Manor)
+    ?? world.structures.find((s) => s.kind === 1 || s.kind === 0) ?? world.structures[0];
   if (st) {
     const a = st.rotY;
     const cx = st.x + Math.sin(a) * 15 + Math.cos(a) * 5, cz = st.z + Math.cos(a) * 15 - Math.sin(a) * 5;
@@ -85,5 +88,29 @@ export function tourViewpoints(world: World): Viewpoint[] {
   const meadow = find((i) => world.biome[i] === Biome.Meadow && world.path[i] === 0, (i) => -Math.abs(world.height[i] - 22) + Math.sin(i * 3.1) * 4);
   if (meadow) out.push({ name: "meadow", x: meadow.x, y: heightAt(world, meadow.x, meadow.z) + 1.7, z: meadow.z, yaw: yawTo(meadow.x, meadow.z, px, pz) + 120, pitch: 0 });
   else out.push({ name: "meadow (none)", x: 0, y: 40, z: 0, yaw: 0, pitch: -10 });
+  // 10 village main street at eye level, 11 the village from above
+  const shop = world.structures.find((s) => s.kind === StructureKind.Store || s.kind === StructureKind.Hotel);
+  let green: (typeof world.structures)[0] | undefined;
+  if (shop) for (const s of world.structures) if (s.kind === StructureKind.Hamlet && (!green || Math.hypot(s.x - shop.x, s.z - shop.z) < Math.hypot(green.x - shop.x, green.z - shop.z))) green = s;
+  if (green) {
+    const r = green.rotY;
+    const fx = Math.sin(r), fz = Math.cos(r); // from the green toward the street
+    const ax = Math.cos(r), az = -Math.sin(r); // along the street
+    const sx = green.x + fx * 10.5, sz = green.z + fz * 10.5;
+    const cx = sx - ax * 30 + fx * 1.2, cz = sz - az * 30 + fz * 1.2;
+    out.push({ name: "village street", x: cx, y: heightAt(world, cx, cz) + 1.8, z: cz, yaw: yawTo(cx, cz, sx + ax * 10, sz + az * 10), pitch: 1 });
+    const ox = sx + fx * 42 - ax * 30, oz = sz + fz * 42 - az * 30;
+    out.push({ name: "village above", x: ox, y: Math.max(heightAt(world, ox, oz), green.y) + 34, z: oz, yaw: yawTo(ox, oz, green.x, green.z), pitch: -30 });
+  } else {
+    out.push({ name: "village street (none)", x: 0, y: 40, z: 0, yaw: 0, pitch: -10 });
+    out.push({ name: "village above (none)", x: 0, y: 60, z: 0, yaw: 0, pitch: -30 });
+  }
+  // 12 a cave mouth from outside, at walking height
+  const cm = world.caves.map((c) => c.entrances.find((e) => !e.sky && e.y > 1)).find((e) => !!e);
+  if (cm) {
+    const cx = cm.x + cm.dx * 9, cz = cm.z + cm.dz * 9;
+    const cy = Math.max(heightAt(world, cx, cz), cm.y) + 2.2;
+    out.push({ name: "cave mouth", x: cx, y: cy, z: cz, yaw: yawTo(cx, cz, cm.x, cm.z), pitch: deg(Math.atan2(cm.y + 1.5 - cy, 9)) });
+  } else out.push({ name: "cave mouth (none)", x: 0, y: 40, z: 0, yaw: 0, pitch: -10 });
   return out;
 }

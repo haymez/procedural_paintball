@@ -53,6 +53,17 @@ export const MATERIAL_COLOR: Record<Material, number> = {
   [Material.WoodDark]: 0x6b4428,
   [Material.Metal]: 0x8a9099,
   [Material.Plaster]: 0xf4efe6,
+  [Material.PaintedWood]: 0xd8d0c0,
+  [Material.Corrugated]: 0x9aa0a4,
+  [Material.Thatch]: 0xc4a868,
+  [Material.LavaRock]: 0x4a4644,
+  [Material.Rust]: 0x8a4a2a,
+  [Material.Glass]: 0x2b3d4a,
+  [Material.Railing]: 0xe8e4da,
+  [Material.Cloth]: 0xe0d8c8,
+  [Material.Sign]: 0x7a3a32,
+  [Material.Foliage]: 0x5f8a3c,
+  [Material.Lamp]: 0xffd27a,
 };
 
 export const PROP_INFO: { kind: PropKind; name: string; color: number; px: number }[] = [

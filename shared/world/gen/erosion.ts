@@ -191,6 +191,7 @@ export function dropletErosion(ctx: Ctx, rng: Rng, drops: number): void {
   if (starts.length === 0) return;
   const cal = calderaMask(ctx);
   const protect = (i: number) => (ctx.coast[i] < 16 && ctx.cliff[i] > 0.35) || cal[i] === 1;
+  const before = h.slice();
 
   for (let n = 0; n < drops; n++) {
     const s = starts[rng.int(starts.length)];
@@ -253,6 +254,31 @@ export function dropletErosion(ctx: Ctx, rng: Rng, drops: number): void {
   }
   void bX;
   void bZ;
+  keepShoreline(h, before);
+}
+
+/** Lowest height (m) for dry ground: clearly above the sea, never a 0 m wet-sand flat. */
+export const SHORE_FLOOR = 0.3;
+
+/**
+ * The coastal profile jumps from ~-0.25 m (sea) to ~+0.25 m (beach), so the
+ * shoreline is crisp. Erosion near the coast used to smear it: the droplet
+ * brush wore gullies and beach edges down to exactly 0 m and, on sea cells
+ * (negative height), "eroded" them up to 0 m, and sediment fans raised the
+ * shallows. Those 0 m flats render as a centimetre of sea over sand (a foamy
+ * wet strip) wherever they touch the sea. Undo it: the seabed is never raised
+ * and land is never worn below SHORE_FLOOR (or its own original height).
+ */
+function keepShoreline(h: Float32Array, before: Float32Array): void {
+  for (let i = 0; i < NN; i++) {
+    const b = before[i], v = h[i];
+    if (b < 0) {
+      if (v > b) h[i] = b;
+    } else {
+      const f = b < SHORE_FLOOR ? b : SHORE_FLOOR;
+      if (v < f) h[i] = f;
+    }
+  }
 }
 
 /** Thermal relaxation of slopes above the talus threshold. */

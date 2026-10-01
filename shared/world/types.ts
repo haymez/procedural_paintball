@@ -60,6 +60,7 @@ export enum PropKind {
   Pine = 23, // tall Aleppo pine: leaning trunk, tiered irregular crown
   Understory = 24, // big-leaf forest-floor plant (monstera / elephant ear / philodendron)
   Log = 25, // fallen mossy log (decor, walk over)
+  TiPlant = 26, // ti / ginger clump: strap leaves on short canes, green and red (decor)
 }
 
 /**
@@ -95,6 +96,7 @@ export const PROP_COLLIDER_RADIUS: Record<PropKind, number> = {
   [PropKind.Pine]: 0.35,
   [PropKind.Understory]: 0,
   [PropKind.Log]: 0,
+  [PropKind.TiPlant]: 0,
 };
 export const PROP_COLLIDER_HEIGHT: Record<PropKind, number> = {
   [PropKind.Palm]: 8,
@@ -123,6 +125,7 @@ export const PROP_COLLIDER_HEIGHT: Record<PropKind, number> = {
   [PropKind.Pine]: 10,
   [PropKind.Understory]: 0,
   [PropKind.Log]: 0,
+  [PropKind.TiPlant]: 0,
 };
 
 /** Instances of one prop kind. data is packed [x, y, z, rotY, scale] * count. */
@@ -142,6 +145,18 @@ export enum Material {
   WoodDark = 5,
   Metal = 6,
   Plaster = 7, // white-washed
+  PaintedWood = 8, // weathered painted lap siding; tint = paint colour
+  Corrugated = 9, // corrugated iron roofing; tint = paint (white = bare galvanised)
+  Thatch = 10, // pili-grass / palm thatch
+  LavaRock = 11, // dark basalt masonry: foundations, yard walls, heiau platforms
+  Rust = 12, // rusted iron: mill machinery, tanks
+  // Render-only looks, used by Structure.visual parts (never by colliding solids):
+  Glass = 13, // dark window pane
+  Railing = 14, // see-through balusters between a top and bottom rail
+  Cloth = 15, // awnings, sheets; tint = fabric colour
+  Sign = 16, // painted sign board with faux lettering; tint = board colour
+  Foliage = 17, // potted / hanging plants, creepers; tint = leaf colour
+  Lamp = 18, // glowing lamp glass
 }
 
 /**
@@ -180,6 +195,29 @@ export enum StructureKind {
   Bridge = 8, // footbridge over a stream
   Well = 9,
   Arch = 10, // lone ruined archway / aqueduct fragment
+  // The plantation village (the green / street furniture keep using Hamlet):
+  House = 11, // plantation cottage: painted siding, corrugated roof, front lanai
+  Store = 12, // general store with a false front, porch and a roof deck
+  Hotel = 13, // two-storey hotel with a street balcony
+  Church = 14, // wooden church with a steeple
+  Hale = 15, // thatched Polynesian house (open sides) / canoe house
+  WaterTower = 16,
+  Stall = 17, // market stall on the green
+  Wall = 18, // yard walls and fences (lava rock, pickets)
+  // Remote ruins:
+  SugarMill = 19, // roofless mill house with a tall brick chimney
+  Heiau = 20, // stepped lava-rock temple platform
+  Manor = 21, // ruined two-storey plantation house
+}
+
+/**
+ * Render-only part of a structure: trims, railing balusters, porch details,
+ * signs, spires. Same fields as a Solid, plus "pyramid" (base hx x hz at
+ * cy - hy, apex at cy + hy) and "cone" (radius hx). Never collides, never
+ * blocks shots or bots.
+ */
+export interface VisualPart extends Omit<Solid, "shape"> {
+  shape: SolidShape | "pyramid" | "cone";
 }
 
 export interface Structure {
@@ -192,6 +230,8 @@ export interface Structure {
   rotY: number;
   solids: Solid[];
   /** Walkable-only surfaces (e.g. dock planks you stand on, stairs) are still solids. */
+  /** Render-only detail (no collision; ignored by the sim, bots and checksum). */
+  visual?: VisualPart[];
 }
 
 export interface Landmark {
@@ -229,19 +269,57 @@ export interface Lake {
   z: number;
 }
 
-/** A cave is a graph of spherical nodes joined by tapered tubes. */
+/**
+ * A cave is a graph of spherical nodes joined by tapered tubes. Nodes with
+ * r >= 7 (collide.ts CHAMBER_R) are chambers: squashed spheres with a flat
+ * floor at y - 0.45 r; smaller nodes are tunnel joints (floor y - 0.55 r).
+ */
 export interface CaveNode {
   x: number;
   y: number;
   z: number;
   r: number;
 }
+/**
+ * Solid rock left standing inside a cave (pillar, stalagmite, boulder, rock
+ * fin, lava-tube ledge): a capped cone from (ax, ay, az) with radius ra to
+ * (bx, by, bz) with radius rb (a sphere when both ends coincide). It is cut
+ * out of the void by collide.ts caveSdf, so movement, paintballs, bots and the
+ * renderer all agree on it.
+ */
+export interface CaveRock {
+  ax: number;
+  ay: number;
+  az: number;
+  bx: number;
+  by: number;
+  bz: number;
+  ra: number;
+  rb: number;
+  /** true: big feature blended into the cave walls (meshed with them); false: small rock rendered on its own. */
+  shell: boolean;
+}
 export interface Cave {
   nodes: CaveNode[];
-  /** Pairs of node indices joined by a tapered tube (capsule with lerped radius). */
+  /**
+   * Pairs of node indices joined by a tapered tube (capsule with lerped radius
+   * and a flat floor). An edge between two chambers is a hall: a squashed
+   * capsule with the chambers' radii and floors.
+   */
   edges: [number, number][];
-  /** Where the cave breaks the terrain surface. dir points outward (unit, XZ). */
-  entrances: { x: number; y: number; z: number; dx: number; dz: number }[];
+  /**
+   * Where the cave breaks the terrain surface. dir points outward (unit, XZ).
+   * sky: a skylight hole in the roof over a chamber (you can drop in, not walk out).
+   */
+  entrances: { x: number; y: number; z: number; dx: number; dz: number; sky?: boolean }[];
+  /** Vertical void shafts (skylights): capsule from y0 (inside a chamber) up to y1 (above the terrain), radius r. */
+  shafts?: { x: number; z: number; y0: number; y1: number; r: number }[];
+  /** Rock features standing inside the void (cover). */
+  rocks?: CaveRock[];
+  /** Wall character: "lava" (smoother basalt tubes) or "karst" (lumpier limestone). Default karst. */
+  style?: "lava" | "karst";
+  /** Suggested pickup spots on the real cave floor; upgrade = worth a rarer pickup (dead-end rooms, the main hall). */
+  spots?: { x: number; y: number; z: number; upgrade: boolean }[];
 }
 
 export interface Path {

@@ -1,21 +1,34 @@
-// Structure geometry builders: compose ruins from boxes, wedges and cylinders.
-// All placement is in a local frame (origin on the ground at the site anchor,
-// rotated by rot about Y using the three.js convention, see collide.ts).
+// Structure geometry builders: compose buildings and ruins from boxes, wedges
+// and cylinders (the colliding solids), plus render-only "visual" parts for
+// trims, balusters, signs and spires. All placement is in a local frame
+// (origin on the ground at the site anchor, rotated by rot about Y using the
+// three.js convention, see collide.ts).
 import type { Rng } from "../../math/rng";
 import { atan2, cos, sin } from "../../math/trig";
-import { Material, type Solid, type SolidShape } from "../types";
+import { Material, type Solid, type SolidShape, type VisualPart } from "../types";
 
 export const TINT = {
   white: 0xffffff,
   stone: 0xe9dcc8,
   stoneDark: 0xc9b9a3,
   wood: 0xffffff,
-  shutter: 0x4f8a6b,
-  shutterBlue: 0x4f7fa0,
+  shutter: 0x5f8a72,
+  shutterBlue: 0x5d7f98,
   terracotta: 0xffffff,
   metal: 0xd8d8d0,
   lamp: 0xfff1b0,
-  stucco: [0xf2c68c, 0xe8a87c, 0xf5e0b5, 0xe89f8f, 0xf7d9a0, 0xb8d8c8] as const,
+  /** Sun-faded Riviera plaster. */
+  stucco: [0xe9c99a, 0xdcae8c, 0xeee0c0, 0xd9a99a, 0xeed8a8, 0xbcd0c0] as const,
+  /** Sun-faded plantation paint for lap siding. */
+  paint: [0xa9c2a8, 0xd8c99a, 0xa9bccb, 0xd2a596, 0xe6dfcc, 0xa86a5c, 0xb3ba98, 0x96b2ae, 0xcdb284, 0xb7aebf, 0xe7e4dc] as const,
+  /** Corrugated roofs: bare galvanised (grey) or faded paint. */
+  roof: [0xc4c4be, 0xd4d4ce, 0xa8645a, 0x7a9478, 0x6f7a84, 0xa08a70] as const,
+  trim: 0xf1ece0,
+  lava: 0xffffff,
+  lavaDark: 0xb8b4ae,
+  rust: 0xffffff,
+  thatch: 0xffffff,
+  thatchDark: 0xc9b89a,
 };
 
 export interface Opening {
@@ -26,8 +39,22 @@ export interface Opening {
   y1: number;
 }
 
+/** Window / door trims added (render-only) around a wall's openings. */
+export interface WallTrim {
+  tint: number;
+  /** A point inside the building (local), to tell the outside face. */
+  cx: number;
+  cz: number;
+  /** Paint for louvered shutters beside windows (outside), or 0 for none. */
+  shutter?: number;
+}
+
+/** Visual shapes accepted by Builder.vadd. */
+export type VisualShape = VisualPart["shape"];
+
 export class Builder {
   solids: Solid[] = [];
+  visual: VisualPart[] = [];
   private c: number;
   private s: number;
   constructor(public ox: number, public oy: number, public oz: number, public rot: number) {
@@ -49,6 +76,13 @@ export class Builder {
     });
   }
 
+  /** Render-only part (no collision). */
+  vadd(shape: VisualShape, lx: number, ly: number, lz: number, hx: number, hy: number, hz: number, lrot: number, mat: Material, tint: number): void {
+    this.visual.push({
+      shape, cx: this.wx(lx, lz), cy: this.oy + ly, cz: this.wz(lx, lz), hx, hy, hz, rotY: this.rot + lrot, mat, tint,
+    });
+  }
+
   /** Box by bottom height: y0..y0+h. */
   box(lx: number, y0: number, lz: number, hx: number, h: number, hz: number, mat: Material, tint: number, lrot = 0): void {
     this.add("box", lx, y0 + h / 2, lz, hx, h / 2, hz, lrot, mat, tint);
@@ -63,13 +97,30 @@ export class Builder {
     this.add("cylinder", lx, y0 + h / 2, lz, r, h / 2, r, 0, mat, tint);
   }
 
+  vbox(lx: number, y0: number, lz: number, hx: number, h: number, hz: number, mat: Material, tint: number, lrot = 0): void {
+    this.vadd("box", lx, y0 + h / 2, lz, hx, h / 2, hz, lrot, mat, tint);
+  }
+  vwedge(lx: number, y0: number, lz: number, hx: number, h: number, hz: number, mat: Material, tint: number, lrot = 0): void {
+    this.vadd("wedge", lx, y0 + h / 2, lz, hx, h / 2, hz, lrot, mat, tint);
+  }
+  vcyl(lx: number, y0: number, lz: number, r: number, h: number, mat: Material, tint: number): void {
+    this.vadd("cylinder", lx, y0 + h / 2, lz, r, h / 2, r, 0, mat, tint);
+  }
+  vpyr(lx: number, y0: number, lz: number, hx: number, h: number, hz: number, mat: Material, tint: number, lrot = 0): void {
+    this.vadd("pyramid", lx, y0 + h / 2, lz, hx, h / 2, hz, lrot, mat, tint);
+  }
+  vcone(lx: number, y0: number, lz: number, r: number, h: number, mat: Material, tint: number): void {
+    this.vadd("cone", lx, y0 + h / 2, lz, r, h / 2, r, 0, mat, tint);
+  }
+
   /**
    * Straight wall from (x0,z0) to (x1,z1) (local), thickness t, from y0 up to
    * height H, with door/window openings. ruin (0..1) breaks the top unevenly.
+   * trim adds render-only frames, sills and shutters around the openings.
    */
   wall(
     x0: number, z0: number, x1: number, z1: number, t: number, y0: number, H: number,
-    openings: Opening[], mat: Material, tint: number, rng?: Rng, ruin = 0,
+    openings: Opening[], mat: Material, tint: number, rng?: Rng, ruin = 0, trim?: WallTrim,
   ): void {
     const dx = x1 - x0, dz = z1 - z0;
     const L = Math.sqrt(dx * dx + dz * dz);
@@ -107,11 +158,98 @@ export class Builder {
       cur = b;
     }
     solidRun(cur, L);
+    if (!trim) return;
+    // normal (left of the direction of travel) and which side is outside
+    const nx = -uz, nz = ux;
+    const mx = (x0 + x1) / 2 - trim.cx, mz = (z0 + z1) / 2 - trim.cz;
+    const outSign = mx * nx + mz * nz >= 0 ? 1 : -1;
+    const at = (a: number, o: number): [number, number] => [x0 + ux * a + nx * o, z0 + uz * a + nz * o];
+    for (const o of ops) {
+      const door = o.y0 <= 0.05;
+      const top = Math.min(o.y1, H - 0.02);
+      for (const side of [1, -1]) {
+        const off = side * (t / 2 + 0.025);
+        // jambs
+        for (const e of [-1, 1]) {
+          const [px, pz] = at(o.at + e * (o.w / 2 + 0.045), off);
+          this.vbox(px, y0 + o.y0, pz, 0.05, top - o.y0 + 0.08, 0.028, Material.Plaster, trim.tint, lrot);
+        }
+        // head
+        const [hx, hz] = at(o.at, side * (t / 2 + 0.03));
+        if (top < H - 0.1) this.vbox(hx, y0 + top, hz, o.w / 2 + 0.1, 0.13, 0.035, Material.Plaster, trim.tint, lrot);
+        if (!door) {
+          const [sx, sz] = at(o.at, side * (t / 2 + 0.05));
+          this.vbox(sx, y0 + o.y0 - 0.07, sz, o.w / 2 + 0.13, 0.07, 0.06, Material.Plaster, trim.tint, lrot);
+        }
+      }
+      if (!door && trim.shutter) {
+        for (const e of [-1, 1]) {
+          const [px, pz] = at(o.at + e * (o.w / 2 + 0.1 + o.w / 4), outSign * (t / 2 + 0.035));
+          this.vbox(px, y0 + o.y0 + 0.02, pz, o.w / 4, top - o.y0 - 0.04, 0.02, Material.PaintedWood, trim.shutter, lrot);
+        }
+      }
+    }
   }
 }
 
 export function pickStucco(rng: Rng): number {
   return rng.pick(TINT.stucco);
+}
+
+/** Box with its long axis along the local direction (dx, dz) from p0 to p1. */
+export function beam(b: Builder, x0: number, z0: number, x1: number, z1: number, y0: number, h: number, halfW: number, mat: Material, tint: number, visual = false): void {
+  const dx = x1 - x0, dz = z1 - z0;
+  const L = Math.sqrt(dx * dx + dz * dz);
+  if (L < 0.02) return;
+  const r = atan2(-dz / L, dx / L);
+  if (visual) b.vbox((x0 + x1) / 2, y0, (z0 + z1) / 2, L / 2, h, halfW, mat, tint, r);
+  else b.box((x0 + x1) / 2, y0, (z0 + z1) / 2, L / 2, h, halfW, mat, tint, r);
+}
+
+/**
+ * Straight stair of full-height step boxes climbing from y0 (ground) to y1,
+ * starting at (x, z) and running along the local unit direction (dx, dz).
+ * Each step's box runs on under the higher steps to 0.25 m past the top, so
+ * the treads are deep enough for the bots' nav to stand on (the visible shape
+ * is unchanged). Returns the distance covered. Rises stay under the sim's step height.
+ */
+export function stair(b: Builder, x: number, z: number, dx: number, dz: number, halfW: number, y0: number, y1: number, mat: Material, tint: number, run = 0.52, maxRise = 0.36, below = 0.4): number {
+  const n = Math.max(1, Math.ceil((y1 - y0) / maxRise - 1e-6));
+  const rise = (y1 - y0) / n;
+  const r = atan2(dx, dz);
+  const end = run * n + 0.25;
+  for (let k = 1; k <= n; k++) {
+    const a = run * (k - 1), d = (a + end) / 2;
+    b.box(x + dx * d, y0 - below, z + dz * d, halfW, rise * k + below, (end - a) / 2, mat, tint, r);
+  }
+  return n * run;
+}
+
+/**
+ * Railing from p0 to p1 standing on y: a solid top rail (stops bodies, not
+ * paintballs) over render-only balusters, a bottom rail and end posts.
+ */
+export function railing(b: Builder, x0: number, z0: number, x1: number, z1: number, y: number, tint: number, h = 0.95, solid = true): void {
+  const dx = x1 - x0, dz = z1 - z0;
+  const L = Math.sqrt(dx * dx + dz * dz);
+  if (L < 0.2) return;
+  const r = atan2(-dz / L, dx / L);
+  const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+  if (solid) b.box(mx, y + h - 0.07, mz, L / 2, 0.07, 0.045, Material.Plaster, tint, r);
+  else b.vbox(mx, y + h - 0.07, mz, L / 2, 0.07, 0.045, Material.Plaster, tint, r);
+  b.vbox(mx, y + 0.08, mz, L / 2, 0.06, 0.035, Material.Plaster, tint, r);
+  b.vbox(mx, y + 0.14, mz, L / 2, h - 0.21, 0.018, Material.Railing, tint, r);
+  for (const [px, pz] of [[x0, z0], [x1, z1]]) b.vbox(px, y, pz, 0.06, h + 0.04, 0.06, Material.Plaster, tint, r);
+}
+
+/** A crate stack / barrel: solid cover. */
+export function crate(b: Builder, x: number, y: number, z: number, s: number, rot: number, tint = TINT.wood): void {
+  b.box(x, y, z, s, s * 2, s, Material.Wood, tint, rot);
+}
+export function barrel(b: Builder, x: number, y: number, z: number, rust = false): void {
+  b.cyl(x, y, z, 0.32, 0.9, rust ? Material.Rust : Material.WoodDark, TINT.wood);
+  b.vcyl(x, y + 0.18, z, 0.335, 0.05, Material.Rust, 0x9a8f86);
+  b.vcyl(x, y + 0.67, z, 0.335, 0.05, Material.Rust, 0x9a8f86);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,23 +262,32 @@ export interface Spot {
   tag: string;
 }
 
-function worldSpot(b: Builder, lx: number, ly: number, lz: number, tag: string): Spot {
+export function worldSpot(b: Builder, lx: number, ly: number, lz: number, tag: string): Spot {
   return { x: b.wx(lx, lz), y: b.oy + ly, z: b.wz(lx, lz), tag };
+}
+
+/** Island look for the older sites: Pacific (painted boards, tin roofs) or Riviera. */
+export interface SiteStyle {
+  pacific: boolean;
 }
 
 /**
  * Ruined cottage centered at local (cx, cz) with its door facing local +Z
  * rotated by lrot. Size w (along X) × d (along Z).
  */
-export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: boolean): Spot[] {
-  const tint = pickStucco(rng);
-  const t = 0.4;
+export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: boolean, style: SiteStyle = { pacific: false }): Spot[] {
+  const pac = style.pacific;
+  const wallMat = pac ? Material.PaintedWood : Material.Stucco;
+  const tint = pac ? rng.pick(TINT.paint) : pickStucco(rng);
+  const roofMat = pac ? Material.Corrugated : Material.Terracotta;
+  const roofTint = pac ? rng.pick([0xb07a5c, 0x9a6a52, 0xc9b8a8]) : TINT.terracotta;
+  const t = pac ? 0.26 : 0.4;
   const H = twoStory ? 5.8 : rng.range(2.9, 3.4);
   const ruin = rng.range(0.15, 0.5);
   const hw = w / 2, hd = d / 2;
   const spots: Spot[] = [];
   // floor
-  b.box(0, -0.3, 0, hw, 0.42, hd, Material.Stone, TINT.stone);
+  b.box(0, -0.3, 0, hw, 0.42, hd, pac ? Material.LavaRock : Material.Stone, pac ? TINT.lava : TINT.stone);
   const fy = 0.12;
   // front (door) wall at +Z
   const doorAt = rng.range(w * 0.3, w * 0.7);
@@ -148,9 +295,9 @@ export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: bo
   b.wall(-hw, hd - t / 2, hw, hd - t / 2, t, fy, H, [
     { at: doorAt, w: 1.25, y0: 0, y1: 2.25 },
     { at: winF, w: 0.9, y0: 1.0, y1: 1.95 },
-  ], Material.Stucco, tint, rng, ruin);
+  ], wallMat, tint, rng, ruin);
   // back wall
-  b.wall(hw, -hd + t / 2, -hw, -hd + t / 2, t, fy, H, [{ at: w * rng.range(0.3, 0.7), w: 0.9, y0: 1.0, y1: 1.95 }], Material.Stucco, tint, rng, ruin);
+  b.wall(hw, -hd + t / 2, -hw, -hd + t / 2, t, fy, H, [{ at: w * rng.range(0.3, 0.7), w: 0.9, y0: 1.0, y1: 1.95 }], wallMat, tint, rng, ruin);
   // side walls (between front/back)
   const sideOps = (L: number): Opening[] => (rng.chance(0.7) ? [{ at: L * rng.range(0.35, 0.65), w: 0.85, y0: 1.0, y1: 1.9 }] : []);
   // two-story: outside stair along +X up to a landing and a doorway into the upper floor
@@ -163,12 +310,12 @@ export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: bo
   const rightOps: Opening[] = twoStory
     ? [{ at: hd - t - zDoor, w: Math.min(1.8, hd - t - 0.3), y0: upY - 0.02, y1: upY + 2.2 }]
     : sideOps(d - 2 * t);
-  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd - t, t, fy, H, sideOps(d - 2 * t), Material.Stucco, tint, rng, ruin);
-  b.wall(hw - t / 2, hd - t, hw - t / 2, -hd + t, t, fy, H, rightOps, Material.Stucco, tint, rng, twoStory ? 0 : ruin);
+  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd - t, t, fy, H, sideOps(d - 2 * t), wallMat, tint, rng, ruin);
+  b.wall(hw - t / 2, hd - t, hw - t / 2, -hd + t, t, fy, H, rightOps, wallMat, tint, rng, twoStory ? 0 : ruin);
   // shutters beside the front window
   const sh = rng.chance(0.5) ? TINT.shutter : TINT.shutterBlue;
-  b.box(-hw + winF - 0.75, fy + 0.95, hd + 0.02, 0.28, 1.05, 0.04, Material.Wood, sh);
-  if (rng.chance(0.6)) b.box(-hw + winF + 0.75, fy + 0.95, hd + 0.02, 0.28, 1.05, 0.04, Material.Wood, sh);
+  b.box(-hw + winF - 0.75, fy + 0.95, hd + 0.02, 0.28, 1.05, 0.04, pac ? Material.PaintedWood : Material.Wood, sh);
+  if (rng.chance(0.6)) b.box(-hw + winF + 0.75, fy + 0.95, hd + 0.02, 0.28, 1.05, 0.04, pac ? Material.PaintedWood : Material.Wood, sh);
 
   if (twoStory) {
     // upper floor over the back half
@@ -183,13 +330,13 @@ export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: bo
   }
   // roof: whole, partial, or gone
   const roll = rng.next();
-  const roofH = rng.range(1.0, 1.35);
-  if (roll < 0.4) b.wedge(0, fy + H, 0, hw + 0.35, roofH, hd + 0.4, Material.Terracotta, TINT.terracotta);
+  const roofH = pac ? rng.range(1.3, 1.7) : rng.range(1.0, 1.35);
+  if (roll < 0.4) b.wedge(0, fy + H, 0, hw + 0.35, roofH, hd + 0.4, roofMat, roofTint);
   else if (roll < 0.8) {
     const f = rng.range(0.45, 0.65);
     const side = rng.chance(0.5) ? 1 : -1;
     const phx = (w * f) / 2 + 0.2;
-    b.wedge(side * (hw + 0.35 - phx), fy + H, 0, phx, roofH, hd + 0.4, Material.Terracotta, TINT.terracotta);
+    b.wedge(side * (hw + 0.35 - phx), fy + H, 0, phx, roofH, hd + 0.4, roofMat, roofTint);
   }
   // rubble inside / outside
   const nr = rng.intRange(2, 5);
@@ -200,28 +347,31 @@ export function cottage(b: Builder, rng: Rng, w: number, d: number, twoStory: bo
     const s = rng.range(0.25, 0.5);
     const sx = s * rng.range(0.8, 1.6), rr = rng.range(0, 3);
     if (twoStory && !inside && x + sx > hw - 0.8) continue; // keep the outside stair clear
-    b.box(x, 0, z, sx, s * 1.2, s, Material.Stone, TINT.stoneDark, rr);
+    b.box(x, 0, z, sx, s * 1.2, s, pac ? Material.LavaRock : Material.Stone, pac ? TINT.lavaDark : TINT.stoneDark, rr);
   }
   spots.push(worldSpot(b, rng.range(-hw + 1, hw - 1), fy + 0.2, rng.range(-hd + 1, 0), "interior"));
   return spots;
 }
 
-export function well(b: Builder, lx: number, lz: number): void {
-  b.cyl(lx, 0, lz, 0.95, 0.95, Material.Stone, TINT.stone);
+export function well(b: Builder, lx: number, lz: number, style: SiteStyle = { pacific: false }): void {
+  b.cyl(lx, 0, lz, 0.95, 0.95, style.pacific ? Material.LavaRock : Material.Stone, style.pacific ? TINT.lava : TINT.stone);
   b.box(lx - 0.8, 0.9, lz, 0.08, 1.3, 0.08, Material.WoodDark, TINT.wood);
   b.box(lx + 0.8, 0.9, lz, 0.08, 1.3, 0.08, Material.WoodDark, TINT.wood);
   b.box(lx, 2.15, lz, 0.95, 0.1, 0.1, Material.WoodDark, TINT.wood);
-  b.wedge(lx, 2.25, lz, 1.1, 0.45, 0.7, Material.Terracotta, TINT.terracotta);
+  if (style.pacific) b.wedge(lx, 2.25, lz, 1.1, 0.55, 0.75, Material.Corrugated, 0xb2685a);
+  else b.wedge(lx, 2.25, lz, 1.1, 0.45, 0.7, Material.Terracotta, TINT.terracotta);
 }
 
 const TAN15 = 0.2679491924311228; // tan(pi / 12)
 
-export function lighthouse(b: Builder, rng: Rng): Spot[] {
+export function lighthouse(b: Builder, rng: Rng, style: SiteStyle = { pacific: false }): Spot[] {
   const H = rng.range(14, 17);
   const R = 3.2, t = 0.55, seg = 12;
   const spots: Spot[] = [];
   const band = rng.chance(0.5);
-  b.cyl(0, -0.4, 0, R + 0.6, 0.55, Material.Stone, TINT.stone); // plinth
+  const base = style.pacific ? Material.LavaRock : Material.Stone;
+  const baseT = style.pacific ? TINT.lava : TINT.stone;
+  b.cyl(0, -0.4, 0, R + 0.6, 0.55, base, baseT); // plinth
   // hollow tower: ring of wall boxes with a door gap facing +Z
   for (let k = 0; k < seg; k++) {
     const a = ((k + 0.5) / seg) * 6.283185307179586;
@@ -235,10 +385,10 @@ export function lighthouse(b: Builder, rng: Rng): Spot[] {
     } else {
       b.add("box", x, 0.15 + H / 2, z, half, H / 2, t / 2, lrot, Material.Plaster, TINT.white);
     }
-    if (band) b.add("box", sin(a) * (R + 0.02), 0.15 + H * 0.62, cos(a) * (R + 0.02), half + 0.03, 0.4, 0.05, lrot, Material.Plaster, 0xd9543c);
+    if (band) b.add("box", sin(a) * (R + 0.02), 0.15 + H * 0.62, cos(a) * (R + 0.02), half + 0.03, 0.4, 0.05, lrot, Material.Plaster, 0xb8483a);
   }
   // newel and spiral steps
-  b.cyl(0, 0.15, 0, 0.55, H, Material.Stone, TINT.stone);
+  b.cyl(0, 0.15, 0, 0.55, H, base, baseT);
   const nSteps = Math.round(H / 0.4);
   const rise = H / nSteps;
   const dA = 0.5;
@@ -267,8 +417,8 @@ export function lighthouse(b: Builder, rng: Rng): Spot[] {
   }
   // lantern
   b.cyl(0, top, 0, 1.0, 2.3, Material.Metal, TINT.lamp);
-  b.cyl(0, top + 2.3, 0, 1.35, 0.25, Material.Metal, 0xc8643c);
-  b.cyl(0, top + 2.55, 0, 0.7, 0.5, Material.Metal, 0xc8643c);
+  b.cyl(0, top + 2.3, 0, 1.35, 0.25, Material.Metal, 0xa85a3c);
+  b.cyl(0, top + 2.55, 0, 0.7, 0.5, Material.Metal, 0xa85a3c);
   spots.push({ x: b.wx(0, 2.4), y: b.oy + top + 0.1, z: b.wz(0, 2.4), tag: "top" });
   spots.push({ x: b.wx(1.8, 0), y: b.oy + 0.35, z: b.wz(1.8, 0), tag: "interior" });
   return spots;
@@ -277,7 +427,7 @@ export function lighthouse(b: Builder, rng: Rng): Spot[] {
 export function chapel(b: Builder, rng: Rng): Spot[] {
   const w = rng.range(6, 7), d = rng.range(10, 12.5);
   const hw = w / 2, hd = d / 2, t = 0.55, H = rng.range(4.6, 5.4);
-  const tint = rng.chance(0.5) ? TINT.white : pickStucco(rng);
+  const tint = rng.chance(0.5) ? 0xf1ebdf : pickStucco(rng);
   const ruin = rng.range(0.1, 0.35);
   const spots: Spot[] = [];
   b.box(0, -0.4, 0, hw + 0.3, 0.52, hd + 0.3, Material.Stone, TINT.stone);
@@ -305,7 +455,7 @@ export function chapel(b: Builder, rng: Rng): Spot[] {
   for (const [px, pz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) b.box(tx + px * 1.05, tH - 2.2, tz + pz * 1.05, 0.25, 1.7, 0.25, Material.Stucco, tint);
   b.box(tx, tH - 0.5, tz, 1.45, 0.3, 1.45, Material.Stone, TINT.stone);
   b.wedge(tx, tH - 0.2, tz, 1.45, 1.4, 1.45, Material.Terracotta, TINT.terracotta);
-  b.cyl(tx, tH - 1.8, tz, 0.45, 0.8, Material.Metal, 0xc9a13c);
+  b.cyl(tx, tH - 1.8, tz, 0.45, 0.8, Material.Metal, 0xb08f4c);
   // altar + pews
   b.box(0, fy, -hd + 1.3, 1.2, 1.0, 0.5, Material.Stone, TINT.white);
   const rows = Math.floor((d - 4.5) / 1.4);
@@ -319,17 +469,19 @@ export function chapel(b: Builder, rng: Rng): Spot[] {
   return spots;
 }
 
-export function watchtower(b: Builder, rng: Rng): Spot[] {
+export function watchtower(b: Builder, rng: Rng, style: SiteStyle = { pacific: false }): Spot[] {
   const S = 2.6, t = 0.6, H = rng.range(8.5, 10.5);
   const spots: Spot[] = [];
-  b.box(0, -0.4, 0, S + 0.4, 0.55, S + 0.4, Material.Stone, TINT.stone);
+  const M = style.pacific ? Material.LavaRock : Material.Stone;
+  const T = style.pacific ? TINT.lava : TINT.stone;
+  b.box(0, -0.4, 0, S + 0.4, 0.55, S + 0.4, M, T);
   const fy = 0.15;
   const ruin = 0.25;
   // four walls with a door on +Z and arrow slits
-  b.wall(-S, S - t / 2, S, S - t / 2, t, fy, H, [{ at: S, w: 1.2, y0: 0, y1: 2.3 }, { at: S * 0.5, w: 0.3, y0: 5.5, y1: 6.6 }], Material.Stone, TINT.stone, rng, 0);
-  b.wall(S, -S + t / 2, -S, -S + t / 2, t, fy, H, [{ at: S, w: 0.3, y0: 3.2, y1: 4.4 }, { at: S * 1.4, w: 0.3, y0: 6.4, y1: 7.5 }], Material.Stone, TINT.stone, rng, 0);
-  b.wall(-S + t / 2, -S + t, -S + t / 2, S - t, t, fy, H, [{ at: S - t, w: 0.3, y0: 4.8, y1: 6.0 }], Material.Stone, TINT.stone, rng, 0);
-  b.wall(S - t / 2, S - t, S - t / 2, -S + t, t, fy, H, [{ at: S - t, w: 0.3, y0: 2.4, y1: 3.6 }], Material.Stone, TINT.stone, rng, 0);
+  b.wall(-S, S - t / 2, S, S - t / 2, t, fy, H, [{ at: S, w: 1.2, y0: 0, y1: 2.3 }, { at: S * 0.5, w: 0.3, y0: 5.5, y1: 6.6 }], M, T, rng, 0);
+  b.wall(S, -S + t / 2, -S, -S + t / 2, t, fy, H, [{ at: S, w: 0.3, y0: 3.2, y1: 4.4 }, { at: S * 1.4, w: 0.3, y0: 6.4, y1: 7.5 }], M, T, rng, 0);
+  b.wall(-S + t / 2, -S + t, -S + t / 2, S - t, t, fy, H, [{ at: S - t, w: 0.3, y0: 4.8, y1: 6.0 }], M, T, rng, 0);
+  b.wall(S - t / 2, S - t, S - t / 2, -S + t, t, fy, H, [{ at: S - t, w: 0.3, y0: 2.4, y1: 3.6 }], M, T, rng, 0);
   // square spiral stair along the inner walls, starting at the back-left
   const inner = S - t; // inner half size
   const rise = 0.42, run = 0.72, sw = 0.5; // stair half width
@@ -372,7 +524,7 @@ export function watchtower(b: Builder, rng: Rng): Spot[] {
   for (let k = -2; k <= 2; k += 2) {
     for (const [ox, oz, rx] of [[k * 0.9, S - 0.3, 0], [k * 0.9, -S + 0.3, 0], [S - 0.3, k * 0.9, 1], [-S + 0.3, k * 0.9, 1]]) {
       if (rng.chance(ruin)) continue;
-      b.box(ox, fy + H, oz, rx ? 0.3 : 0.45, 0.8, rx ? 0.45 : 0.3, Material.Stone, TINT.stone);
+      b.box(ox, fy + H, oz, rx ? 0.3 : 0.45, 0.8, rx ? 0.45 : 0.3, M, T);
     }
   }
   spots.push({ x: b.wx(0, 0), y: b.oy + py + 0.2, z: b.wz(0, 0), tag: "top" });
@@ -381,18 +533,24 @@ export function watchtower(b: Builder, rng: Rng): Spot[] {
 }
 
 /** Boathouse on the shore facing local -Z (the water), dock extends along -Z. */
-export function boathouse(b: Builder, rng: Rng, dockLen: number, dockY: number, seabed: (lx: number, lz: number) => number): Spot[] {
+export function boathouse(b: Builder, rng: Rng, dockLen: number, dockY: number, seabed: (lx: number, lz: number) => number, style: SiteStyle = { pacific: false }): Spot[] {
   const w = 6.5, d = 7.5, hw = w / 2, hd = d / 2, t = 0.35, H = 3.4;
-  const tint = pickStucco(rng);
+  const pac = style.pacific;
+  const wallMat = pac ? Material.PaintedWood : Material.Stucco;
+  const tint = pac ? rng.pick(TINT.paint) : pickStucco(rng);
   const spots: Spot[] = [];
   b.box(0, -0.6, 0, hw, 0.72, hd, Material.Wood, TINT.wood);
   const fy = 0.12;
+  const trim: WallTrim | undefined = pac ? { tint: TINT.trim, cx: 0, cz: 0 } : undefined;
   // land-side back wall (+Z) with a door, water-side (-Z) wide opening
-  b.wall(-hw, hd - t / 2, hw, hd - t / 2, t, fy, H, [{ at: hw, w: 1.2, y0: 0, y1: 2.2 }], Material.Stucco, tint, rng, 0.15);
+  b.wall(-hw, hd - t / 2, hw, hd - t / 2, t, fy, H, [{ at: hw, w: 1.2, y0: 0, y1: 2.2 }], wallMat, tint, rng, 0.15, trim);
   b.wall(hw, -hd + t / 2, -hw, -hd + t / 2, t, fy, H, [{ at: hw, w: 3.6, y0: 0, y1: 2.9 }], Material.Wood, TINT.wood, rng, 0);
-  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd - t, t, fy, H, [{ at: 3.2, w: 0.9, y0: 1.0, y1: 1.9 }], Material.Stucco, tint, rng, 0.15);
-  b.wall(hw - t / 2, hd - t, hw - t / 2, -hd + t, t, fy, H, [], Material.Stucco, tint, rng, 0.15);
-  if (rng.chance(0.7)) b.wedge(0, fy + H, 0, hw + 0.3, 1.2, hd + 0.4, Material.Terracotta, TINT.terracotta, Math.PI / 2);
+  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd - t, t, fy, H, [{ at: 3.2, w: 0.9, y0: 1.0, y1: 1.9 }], wallMat, tint, rng, 0.15, trim);
+  b.wall(hw - t / 2, hd - t, hw - t / 2, -hd + t, t, fy, H, [], wallMat, tint, rng, 0.15);
+  if (rng.chance(0.7)) {
+    if (pac) b.wedge(0, fy + H, 0, hw + 0.3, 1.5, hd + 0.4, Material.Corrugated, rng.pick(TINT.roof), Math.PI / 2);
+    else b.wedge(0, fy + H, 0, hw + 0.3, 1.2, hd + 0.4, Material.Terracotta, TINT.terracotta, Math.PI / 2);
+  }
   // dock
   const dw = 1.2;
   const z0 = -hd, z1 = -hd - dockLen;
@@ -435,21 +593,28 @@ export function jetty(b: Builder, rng: Rng, len: number, top: number, seabed: (l
   for (let k = 0; k < 2; k++) {
     const x = side * (dw + 2.6 + k * 0.1), z = z1 + 1.2 + k * 3.2;
     const bed = seabed(x, z) - b.oy;
-    if (top + 1.6 - bed > 0.5) b.cyl(x, bed, z, 0.13, top + 1.6 - bed, Material.Wood, rng.pick([0x4f7fa0, 0xd8584a, 0x4f8a6b]));
+    if (top + 1.6 - bed > 0.5) b.cyl(x, bed, z, 0.13, top + 1.6 - bed, Material.Wood, rng.pick([0x5d7f98, 0xb8584a, 0x5f8a72]));
   }
   return [worldSpot(b, 0, top + 0.1, z1 + 1.2, "dockEnd")];
 }
 
-export function vespaShed(b: Builder, rng: Rng): Spot[] {
+export function vespaShed(b: Builder, rng: Rng, style: SiteStyle = { pacific: false }): Spot[] {
   const w = 4.2, d = 3.2, hw = w / 2, hd = d / 2, t = 0.3, H = 2.7;
-  const tint = pickStucco(rng);
-  b.box(0, -0.3, 0, hw, 0.4, hd, Material.Stone, TINT.stone);
-  b.wall(hw, -hd + t / 2, -hw, -hd + t / 2, t, 0.1, H, [], Material.Stucco, tint);
-  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd, t, 0.1, H, [], Material.Stucco, tint);
-  b.wall(hw - t / 2, hd, hw - t / 2, -hd + t, t, 0.1, H, [], Material.Stucco, tint);
-  b.box(0, 0.1 + H, 0.2, hw + 0.3, 0.14, hd + 0.5, Material.Metal, 0xb8c4c8);
+  const pac = style.pacific;
+  const wallMat = pac ? Material.PaintedWood : Material.Stucco;
+  const tint = pac ? rng.pick(TINT.paint) : pickStucco(rng);
+  b.box(0, -0.3, 0, hw, 0.4, hd, pac ? Material.LavaRock : Material.Stone, pac ? TINT.lava : TINT.stone);
+  b.wall(hw, -hd + t / 2, -hw, -hd + t / 2, t, 0.1, H, [], wallMat, tint);
+  b.wall(-hw + t / 2, -hd + t, -hw + t / 2, hd, t, 0.1, H, [], wallMat, tint);
+  b.wall(hw - t / 2, hd, hw - t / 2, -hd + t, t, 0.1, H, [], wallMat, tint);
+  b.box(0, 0.1 + H, 0.2, hw + 0.3, 0.14, hd + 0.5, pac ? Material.Corrugated : Material.Metal, pac ? rng.pick(TINT.roof) : 0xb8c4c8);
   // a workbench
   b.box(-hw + 0.8, 0.1, -hd + 0.6, 0.5, 0.85, 0.3, Material.WoodDark, TINT.wood);
+  if (pac) {
+    // oil drums and a hand-painted sign
+    barrel(b, hw + 0.55, 0, hd - 0.4, true);
+    b.vbox(0, 0.1 + H - 0.55, hd + 0.03, 1.2, 0.42, 0.03, Material.Sign, 0x2f5a63);
+  }
   return [worldSpot(b, 0.6, 0.3, 0, "interior")];
 }
 

@@ -1,90 +1,23 @@
-// Stage 6: sites. Picks spots for a handful of remote ruins (hamlet, lighthouse,
-// chapel, watchtower, boathouse + dock, Vespa shed, aqueduct fragment),
-// flattens/terraces the ground under them and builds their solids.
+// Stage 6: sites. Picks spots for the lighthouse, the boathouse + dock, the
+// plantation village (village.ts) and a handful of remote ruins (a heiau or a
+// chapel on a hilltop, a watchtower, a sugar mill, a ruined plantation house
+// or an aqueduct fragment, a Vespa shed), flattens/terraces the ground under
+// them and builds their solids. Lush / tropical islands get the Pacific look
+// (lava rock, painted boards, tin roofs); Mediterranean / dry ones keep the
+// Riviera ruins.
 import type { Rng } from "../../math/rng";
 import { atan2, cos, sin } from "../../math/trig";
-import { smoothstep } from "../../math/vec";
 import type { Ctx, Site } from "../context";
 import { gx, N, sample, slopeGrid, toI } from "../grid";
-import { NO_WATER, StructureKind, Material, type Solid } from "../types";
-import { aqueduct, boathouse, Builder, chapel, cottage, jetty, lighthouse, TINT, vespaShed, watchtower, well, type Spot } from "./build";
+import { StructureKind } from "../types";
+import { aqueduct, boathouse, Builder, chapel, cottage, jetty, lighthouse, vespaShed, watchtower, type SiteStyle } from "./build";
+import { heiau, manor, sugarMill } from "./ruins";
+import { addStructure, BLOCK_DOCK, BLOCK_STRUCT, flatten, markDisc, stats } from "./siteutil";
+import { hale, placeVillage, villageStyle } from "./village";
+import { computeReach } from "../reach";
+import { worldFromCtx } from "./gameplay";
 
-export const BLOCK_STRUCT = 1;
-export const BLOCK_PATH = 2;
-export const BLOCK_CAVE = 4;
-export const BLOCK_WATER = 8;
-export const BLOCK_DOCK = 16;
-export const BLOCK_VILLAGE = 32;
-
-interface Stats {
-  mean: number;
-  min: number;
-  max: number;
-  wet: boolean;
-}
-
-function stats(ctx: Ctx, x: number, z: number, r: number): Stats {
-  let sum = 0, n = 0, mn = 1e9, mx = -1e9, wet = false;
-  const h = ctx.height;
-  for (let ring = 0; ring <= 2; ring++) {
-    const rr = (r * ring) / 2;
-    const cnt = ring === 0 ? 1 : ring * 8;
-    for (let k = 0; k < cnt; k++) {
-      const a = (k / cnt) * 6.283185307179586 + ring * 0.3;
-      const px = x + sin(a) * rr, pz = z + cos(a) * rr;
-      const v = sample(h, px, pz);
-      sum += v;
-      n++;
-      if (v < mn) mn = v;
-      if (v > mx) mx = v;
-      const i = toI(pz) * N + toI(px);
-      if (ctx.water[i] !== NO_WATER || ctx.holes[i] || (ctx.blocked[i] & (BLOCK_CAVE | BLOCK_STRUCT))) wet = true;
-    }
-  }
-  return { mean: sum / n, min: mn, max: mx, wet };
-}
-
-/** Flatten ground to Y inside radius r, blending over margin. */
-export function flatten(ctx: Ctx, x: number, z: number, r: number, margin: number, Y: number): void {
-  const h = ctx.height;
-  const R = r + margin;
-  for (let iz = toI(z - R); iz <= toI(z + R); iz++)
-    for (let ix = toI(x - R); ix <= toI(x + R); ix++) {
-      const dx = gx(ix) - x, dz = gx(iz) - z;
-      const d = Math.sqrt(dx * dx + dz * dz);
-      if (d > R) continue;
-      const i = iz * N + ix;
-      if (ctx.water[i] !== NO_WATER || ctx.holes[i]) continue;
-      const w = 1 - smoothstep(r, R, d);
-      h[i] = h[i] + (Y - h[i]) * w;
-    }
-}
-
-function markFootprint(ctx: Ctx, solids: Solid[], bit: number, pad: number): void {
-  for (const s of solids) {
-    const r = (s.shape === "cylinder" ? s.hx : Math.sqrt(s.hx * s.hx + s.hz * s.hz)) + pad;
-    for (let iz = toI(s.cz - r); iz <= toI(s.cz + r); iz++)
-      for (let ix = toI(s.cx - r); ix <= toI(s.cx + r); ix++) {
-        const dx = gx(ix) - s.cx, dz = gx(iz) - s.cz;
-        if (dx * dx + dz * dz <= r * r) ctx.blocked[iz * N + ix] |= bit;
-      }
-  }
-}
-
-function markDisc(ctx: Ctx, x: number, z: number, r: number, bit: number): void {
-  for (let iz = toI(z - r); iz <= toI(z + r); iz++)
-    for (let ix = toI(x - r); ix <= toI(x + r); ix++) {
-      const dx = gx(ix) - x, dz = gx(iz) - z;
-      if (dx * dx + dz * dz <= r * r) ctx.blocked[iz * N + ix] |= bit;
-    }
-}
-
-export function addStructure(ctx: Ctx, kind: StructureKind, b: Builder): number {
-  const id = ctx.structures.length;
-  ctx.structures.push({ id, kind, x: b.ox, y: b.oy, z: b.oz, rotY: b.rot, solids: b.solids });
-  markFootprint(ctx, b.solids, BLOCK_STRUCT, 1.0);
-  return id;
-}
+export { addStructure, BLOCK_CAVE, BLOCK_DOCK, BLOCK_FIELD, BLOCK_PATH, BLOCK_STRUCT, BLOCK_VILLAGE, BLOCK_WATER, flatten } from "./siteutil";
 
 interface Cand {
   x: number;
@@ -102,13 +35,21 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
   slopeGrid(ctx.height, ctx.slope);
   const h = ctx.height;
   const sites = ctx.sites;
-  const farFrom = (x: number, z: number, d: number) => sites.every((s) => (s.x - x) * (s.x - x) + (s.z - z) * (s.z - z) >= d * d);
+  // only build where players can walk to (tablelands ringed by cliffs are out)
+  const reach = computeReach(worldFromCtx(ctx)).main;
+  const style: SiteStyle = { pacific: ctx.ch.climate === "lush" || ctx.ch.climate === "tropical" };
+  // distance to every site so far, counting the village's own radius
+  const farFrom = (x: number, z: number, d: number) =>
+    sites.every((s) => {
+      const r = d + (s.kind === "village" ? s.radius : 0);
+      return (s.x - x) * (s.x - x) + (s.z - z) * (s.z - z) >= r * r;
+    });
   const distTo = (s: Site | undefined, x: number, z: number) => (s ? Math.sqrt((s.x - x) * (s.x - x) + (s.z - z) * (s.z - z)) : 0);
   const grid: { x: number; z: number; i: number }[] = [];
   for (let iz = 8; iz < N - 8; iz += 4)
     for (let ix = 8; ix < N - 8; ix += 4) {
       const i = iz * N + ix;
-      if (h[i] > 0.6) grid.push({ x: gx(ix), z: gx(iz), i });
+      if (h[i] > 0.6 && reach[i]) grid.push({ x: gx(ix), z: gx(iz), i });
     }
   const prominence = (x: number, z: number, r: number) => {
     let s = 0;
@@ -140,7 +81,7 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       flatten(ctx, c.x, c.z, 6.5, 6, Y);
       const rot = toCenter(c.x, c.z);
       const b = new Builder(c.x, Y, c.z, rot);
-      const spots = lighthouse(b, rng.fork("lighthouse"));
+      const spots = lighthouse(b, rng.fork("lighthouse"), style);
       const id = addStructure(ctx, StructureKind.Lighthouse, b);
       // keeper's cottage beside the tower
       const kb = new Builder(b.wx(-7.5, 1), 0, b.wz(-7.5, 1), rot);
@@ -149,7 +90,7 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       if (!kst.wet && kst.max - kst.min < 4 && kst.min > 1) {
         kb.oy = kst.mean;
         flatten(ctx, kb.ox, kb.oz, 4.5, 4, kb.oy);
-        spots.push(...cottage(kb, rng.fork("keeper"), 5.5, 4.4, false));
+        spots.push(...cottage(kb, rng.fork("keeper"), 5.5, 4.4, false, style));
         ids.push(addStructure(ctx, StructureKind.Cottage, kb));
       }
       sites.push({ kind: "lighthouse", x: c.x, z: c.z, y: Y, rot, radius: 14, structureIds: ids, spots, door: { x: b.wx(0, 6), z: b.wz(0, 6) } });
@@ -165,7 +106,6 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       const hv = h[g.i];
       if (hv < 0.7 || hv > 4.5 || ctx.shelter[g.i] < 0.42 || ctx.waterDist[g.i] < 14 || ctx.cliff[g.i] > 0.4) continue;
       // seaward direction from the coast-distance gradient
-      const ix = g.i % N, iz = (g.i / N) | 0;
       const dxv = ctx.coast[g.i + 2] - ctx.coast[g.i - 2], dzv = ctx.coast[g.i + 2 * N] - ctx.coast[g.i - 2 * N];
       const l = Math.sqrt(dxv * dxv + dzv * dzv);
       if (l < 1e-3) continue;
@@ -174,8 +114,6 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       const d30 = sample(h, g.x + sx * 32, g.z + sz * 32);
       if (d20 > -1.1 || d30 > -1.3) continue;
       if (!farFrom(g.x, g.z, 90)) continue;
-      void ix;
-      void iz;
       cands.push({ x: g.x, z: g.z, score: ctx.shelter[g.i] * 2 + rng.next() * 0.4 });
     }
     const c = best(cands);
@@ -192,106 +130,35 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       while (len < 30 && sample(h, c.x + sx * (len + 3.75), c.z + sz * (len + 3.75)) > -1.8) len += 1;
       len = Math.min(30, len + 4);
       const b = new Builder(c.x, Y, c.z, rot);
-      const spots = boathouse(b, rng.fork("boathouse"), len, 0.9, (lx, lz) => sample(h, b.wx(lx, lz), b.wz(lx, lz)));
+      const spots = boathouse(b, rng.fork("boathouse"), len, 0.9, (lx, lz) => sample(h, b.wx(lx, lz), b.wz(lx, lz)), style);
       const id = addStructure(ctx, StructureKind.Boathouse, b);
       markDisc(ctx, b.wx(0, -3.75 - len / 2), b.wz(0, -3.75 - len / 2), len / 2 + 3, BLOCK_DOCK);
-      sites.push({ kind: "boathouse", x: c.x, z: c.z, y: Y, rot, radius: 10, structureIds: [id], spots, door: { x: b.wx(0, 6.5), z: b.wz(0, 6.5) } });
+      const ids = [id];
+      // Pacific islands: a thatched canoe house on the beach beside it, open end to the water
+      if (style.pacific) {
+        for (const side of [1, -1]) {
+          const cx = b.wx(side * 11, 1.0), cz = b.wz(side * 11, 1.0);
+          const st = stats(ctx, cx, cz, 5.5);
+          if (st.wet || st.max - st.min > 1.6 || st.min < 0.7) continue;
+          flatten(ctx, cx, cz, 5.2, 3, st.mean);
+          const hb = new Builder(cx, st.mean, cz, rot + Math.PI);
+          const ground = (lx: number, lz: number) => sample(h, hb.wx(lx, lz), hb.wz(lx, lz)) - st.mean;
+          hale(hb, rng.fork("canoe"), { w: 8.8, d: 4.4, pd: 0, fh: 0.45, base: -0.7, below: 0.7, paint: 0, trim: 0, roof: 0, ground }, villageStyle(ctx), true);
+          ids.push(addStructure(ctx, StructureKind.Hale, hb));
+          break;
+        }
+      }
+      sites.push({ kind: "boathouse", x: c.x, z: c.z, y: Y, rot, radius: 10, structureIds: ids, spots, door: { x: b.wx(0, 6.5), z: b.wz(0, 6.5) } });
     }
   }
 
-  // ---- hamlet: gentle ground near a sheltered shore, ideally near the boathouse -------
-  let hamlet: Site | undefined;
-  {
-    const boat = sites.find((s) => s.kind === "boathouse");
-    const cands: Cand[] = [];
-    for (const g of grid) {
-      const c = ctx.coast[g.i];
-      if (c < 35 || c > 190) continue;
-      const hv = h[g.i];
-      if (hv < 2.5 || hv > 40) continue;
-      if (ctx.slope[g.i] > 0.25) continue;
-      if (!farFrom(g.x, g.z, boat ? 60 : 100)) continue;
-      const st = stats(ctx, g.x, g.z, 22);
-      if (st.wet || st.max - st.min > 9 || st.min < 1.5) continue;
-      let score = ctx.shelter[g.i] * 1.2 - (st.max - st.min) * 0.08 + rng.next() * 0.35;
-      const wd = ctx.waterDist[g.i];
-      if (wd > 25 && wd < 110) score += 0.35;
-      if (boat) {
-        const d = distTo(boat, g.x, g.z);
-        score += d > 60 && d < 230 ? 0.6 : -0.3;
-      }
-      cands.push({ x: g.x, z: g.z, score });
-    }
-    const c = best(cands);
-    if (c) {
-      const hr = rng.fork("hamlet");
-      const st = stats(ctx, c.x, c.z, 9);
-      const Y0 = st.mean;
-      flatten(ctx, c.x, c.z, 9, 7, Y0);
-      const pb = new Builder(c.x, Y0, c.z, hr.range(0, 6.283185307179586));
-      pb.cyl(0, -0.4, 0, 7, 0.45, Material.Stone, TINT.stone);
-      // benches
-      for (let k = 0; k < 2; k++) {
-        const a = hr.range(0, 6.283185307179586);
-        pb.box(sin(a) * 5.2, 0.1, cos(a) * 5.2, 0.9, 0.45, 0.25, Material.Stone, TINT.stoneDark, a);
-      }
-      const hamletId = addStructure(ctx, StructureKind.Hamlet, pb);
-      const wb = new Builder(c.x, Y0 + 0.1, c.z, 0);
-      well(wb, hr.range(-1.5, 1.5), hr.range(-1.5, 1.5));
-      const wellId = addStructure(ctx, StructureKind.Well, wb);
-      const ids = [hamletId, wellId];
-      const spots: Spot[] = [{ x: c.x + 2.5, y: Y0 + 0.2, z: c.z, tag: "piazza" }];
-      // 3–4 cottages around the piazza: try 10 slots, keep the ones on good ground
-      const want = hr.intRange(3, 4);
-      const base = hr.range(0, 6.283185307179586);
-      const slots = 10;
-      const placed: { x: number; z: number; r: number }[] = [];
-      let tallDone = false;
-      for (let k = 0; k < slots && placed.length < want; k++) {
-        const a = base + (k * 3 % slots) / slots * 6.283185307179586 + hr.range(-0.2, 0.2);
-        const dist = hr.range(13, 17);
-        const px = c.x + sin(a) * dist, pz = c.z + cos(a) * dist;
-        const w = hr.range(6, 7.6), d = hr.range(4.8, 5.8);
-        const rr = Math.sqrt(w * w + d * d) / 2 + 0.6;
-        if (placed.some((q) => (q.x - px) * (q.x - px) + (q.z - pz) * (q.z - pz) < (q.r + rr + 2.5) * (q.r + rr + 2.5))) continue;
-        const cs = stats(ctx, px, pz, rr);
-        if (cs.wet || cs.max - cs.min > 5 || cs.min < 1.2) continue;
-        const Y = cs.mean;
-        flatten(ctx, px, pz, rr, 4, Y);
-        const rot = atan2(c.x - px, c.z - pz); // door (+Z) faces the piazza
-        const b = new Builder(px, Y, pz, rot);
-        const tall = !tallDone && hr.chance(0.6);
-        if (tall) tallDone = true;
-        spots.push(...cottage(b, hr.fork("c" + k), w, d, tall));
-        ids.push(addStructure(ctx, StructureKind.Cottage, b));
-        markDisc(ctx, px, pz, rr + 3, BLOCK_VILLAGE);
-        placed.push({ x: px, z: pz, r: rr });
-      }
-      // low dry-stone garden walls between the houses
-      const gw = new Builder(c.x, Y0, c.z, 0);
-      for (let k = 0; k < placed.length; k++) {
-        const p = placed[k], q = placed[(k + 1) % placed.length];
-        if (placed.length < 2 || hr.chance(0.35)) continue;
-        const mx = (p.x + q.x) / 2, mz = (p.z + q.z) / 2;
-        const dx = mx - c.x, dz = mz - c.z;
-        const dl = Math.sqrt(dx * dx + dz * dz) || 1;
-        const ox = c.x + (dx / dl) * (dl + 4), oz = c.z + (dz / dl) * (dl + 4);
-        const L = hr.range(4, 7);
-        const ga = atan2(dx, dz);
-        const gy = sample(ctx.height, ox, oz) - Y0;
-        const st = stats(ctx, ox, oz, L / 2);
-        if (st.wet || st.max - st.min > 1.5) continue;
-        gw.box(ox - c.x, gy - 0.2, oz - c.z, L / 2, 1.1, 0.3, Material.Stone, TINT.stoneDark, ga);
-      }
-      if (gw.solids.length) ids.push(addStructure(ctx, StructureKind.Hamlet, gw));
-      markDisc(ctx, c.x, c.z, 11, BLOCK_VILLAGE);
-      hamlet = { kind: "hamlet", x: c.x, z: c.z, y: Y0, rot: 0, radius: 24, structureIds: ids, spots, door: { x: c.x, z: c.z } };
-      sites.push(hamlet);
-    }
-  }
+  // ---- the plantation village: gentle ground, ideally a short road from the boathouse -------
+  const village = placeVillage(ctx, rng.fork("village"), { grid, sites, boat: sites.find((s) => s.kind === "boathouse"), reach });
+  if (village) sites.push(village);
 
-  // ---- chapel on a hilltop, overlooking the hamlet ------------------------------
+  // ---- hilltop: a heiau (Pacific islands) or a chapel, overlooking the village ---------------
   {
+    const R = style.pacific ? 13 : 10;
     const cands: Cand[] = [];
     for (const g of grid) {
       const hv = h[g.i];
@@ -299,26 +166,31 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       if (!farFrom(g.x, g.z, 110)) continue;
       const pr = prominence(g.x, g.z, 40);
       if (pr < 1.5) continue;
-      const st = stats(ctx, g.x, g.z, 10);
-      if (st.wet || st.max - st.min > 7) continue;
+      const st = stats(ctx, g.x, g.z, R);
+      if (st.wet || st.max - st.min > (style.pacific ? 8 : 7)) continue;
       let score = pr / 8 + rng.next() * 0.4 - (st.max - st.min) * 0.05;
-      if (hamlet) {
-        const d = distTo(hamlet, g.x, g.z);
+      if (village) {
+        const d = distTo(village, g.x, g.z);
         score += d > 110 && d < 330 ? 0.7 : 0;
       }
       cands.push({ x: g.x, z: g.z, score });
     }
     const c = best(cands);
     if (c) {
-      const st = stats(ctx, c.x, c.z, 10);
+      const st = stats(ctx, c.x, c.z, R);
       const Y = st.mean;
-      flatten(ctx, c.x, c.z, 10, 8, Y);
-      const rot = hamlet ? atan2(hamlet.x - c.x, hamlet.z - c.z) : toCenter(c.x, c.z) + Math.PI;
+      flatten(ctx, c.x, c.z, R, 8, Y);
+      const rot = village ? atan2(village.x - c.x, village.z - c.z) : toCenter(c.x, c.z) + Math.PI;
       const b = new Builder(c.x, Y, c.z, rot);
-      const spots = chapel(b, rng.fork("chapel"));
-      const ids = [addStructure(ctx, StructureKind.Chapel, b)];
-      markDisc(ctx, c.x, c.z, 13, BLOCK_VILLAGE);
-      sites.push({ kind: "chapel", x: c.x, z: c.z, y: Y, rot, radius: 14, structureIds: ids, spots, door: { x: b.wx(0, 10), z: b.wz(0, 10) } });
+      if (style.pacific) {
+        const spots = heiau(b, rng.fork("heiau"));
+        const ids = [addStructure(ctx, StructureKind.Heiau, b)];
+        sites.push({ kind: "heiau", x: c.x, z: c.z, y: Y, rot, radius: 15, structureIds: ids, spots, door: { x: b.wx(0, 12), z: b.wz(0, 12) } });
+      } else {
+        const spots = chapel(b, rng.fork("chapel"));
+        const ids = [addStructure(ctx, StructureKind.Chapel, b)];
+        sites.push({ kind: "chapel", x: c.x, z: c.z, y: Y, rot, radius: 14, structureIds: ids, spots, door: { x: b.wx(0, 10), z: b.wz(0, 10) } });
+      }
     }
   }
 
@@ -343,22 +215,48 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       const i = toI(c.z) * N + toI(c.x);
       const rot = atan2(-(h[i + 2] - h[i - 2]), -(h[i + 2 * N] - h[i - 2 * N]));
       const b = new Builder(c.x, Y, c.z, rot);
-      const spots = watchtower(b, rng.fork("tower"));
+      const spots = watchtower(b, rng.fork("tower"), style);
       const ids = [addStructure(ctx, StructureKind.Watchtower, b)];
       sites.push({ kind: "watchtower", x: c.x, z: c.z, y: Y, rot, radius: 8, structureIds: ids, spots, door: { x: b.wx(0, 6), z: b.wz(0, 6) } });
     }
   }
 
-  // ---- Vespa shed near the hamlet (or anywhere flat) -------------------------------
+  // ---- sugar mill: lowland, near a stream, not far from the sea --------------------------
   {
-    const anchor = hamlet ?? sites[0];
+    const cands: Cand[] = [];
+    for (const g of grid) {
+      const hv = h[g.i];
+      if (hv < 3 || hv > 50 || ctx.slope[g.i] > 0.22) continue;
+      const wd = ctx.waterDist[g.i];
+      if (wd < 16) continue;
+      if (!farFrom(g.x, g.z, 105)) continue;
+      const st = stats(ctx, g.x, g.z, 12);
+      if (st.wet || st.max - st.min > 4.5) continue;
+      cands.push({ x: g.x, z: g.z, score: rng.next() * 0.5 + (wd < 80 ? 0.45 : 0) + (ctx.coast[g.i] < 170 ? 0.3 : 0) - (st.max - st.min) * 0.1 });
+    }
+    const c = best(cands);
+    if (c) {
+      const st = stats(ctx, c.x, c.z, 12);
+      flatten(ctx, c.x, c.z, 11, 9, st.mean);
+      const rot = village ? atan2(village.x - c.x, village.z - c.z) : toCenter(c.x, c.z);
+      const b = new Builder(c.x, st.mean, c.z, rot);
+      const spots = sugarMill(b, rng.fork("mill"), style, (lx, lz) => sample(h, b.wx(lx, lz), b.wz(lx, lz)) - b.oy);
+      const ids = [addStructure(ctx, StructureKind.SugarMill, b)];
+      sites.push({ kind: "mill", x: c.x, z: c.z, y: st.mean, rot, radius: 14, structureIds: ids, spots, door: { x: b.wx(0, 9), z: b.wz(0, 9) } });
+    }
+  }
+
+  // ---- Vespa shed just outside the village (or anywhere flat) -------------------------------
+  {
+    const anchor = village ?? sites[0];
     const cands: Cand[] = [];
     for (const g of grid) {
       const hv = h[g.i];
       if (hv < 2 || ctx.slope[g.i] > 0.2) continue;
       const d = anchor ? distTo(anchor, g.x, g.z) : 100;
-      if (anchor && (d < 42 || d > 120)) continue;
-      if (!sites.every((s) => s === anchor || distTo(s, g.x, g.z) > 70)) continue;
+      const r0 = anchor ? anchor.radius : 0;
+      if (anchor && (d < r0 + 12 || d > r0 + 80)) continue;
+      if (!sites.every((s) => s === anchor || distTo(s, g.x, g.z) > 70 + (s.kind === "village" ? s.radius : 0))) continue;
       const st = stats(ctx, g.x, g.z, 4.5);
       if (st.wet || st.max - st.min > 2.5) continue;
       cands.push({ x: g.x, z: g.z, score: rng.next() - (st.max - st.min) * 0.2 });
@@ -369,43 +267,61 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
       flatten(ctx, c.x, c.z, 5, 5, st.mean);
       const rot = anchor ? atan2(anchor.x - c.x, anchor.z - c.z) : 0;
       const b = new Builder(c.x, st.mean, c.z, rot);
-      const spots = vespaShed(b, rng.fork("shed"));
+      const spots = vespaShed(b, rng.fork("shed"), style);
       const ids = [addStructure(ctx, StructureKind.VespaShed, b)];
       sites.push({ kind: "shed", x: c.x, z: c.z, y: st.mean, rot, radius: 6, structureIds: ids, spots, door: { x: b.wx(0, 5), z: b.wz(0, 5) } });
     }
   }
 
-  // ---- aqueduct / arch fragment in open country ---------------------------------------
-  if (rng.chance(0.65)) {
+  // ---- open country: a ruined plantation house (Pacific) or an aqueduct fragment ---------------
+  if (style.pacific ? rng.chance(0.8) : rng.chance(0.65)) {
+    const R = style.pacific ? 10 : 11;
     const cands: Cand[] = [];
     for (const g of grid) {
       const hv = h[g.i];
       if (hv < 6 || hv > 70 || ctx.slope[g.i] > 0.22 || ctx.coast[g.i] < 50) continue;
       if (!farFrom(g.x, g.z, 110)) continue;
-      const st = stats(ctx, g.x, g.z, 11);
+      const st = stats(ctx, g.x, g.z, R);
       if (st.wet || st.max - st.min > 5) continue;
       cands.push({ x: g.x, z: g.z, score: rng.next() - (st.max - st.min) * 0.1 });
     }
     const c = best(cands);
     if (c) {
       const i = toI(c.z) * N + toI(c.x);
-      // run along the contour
-      const gxv = h[i + 2] - h[i - 2], gzv = h[i + 2 * N] - h[i - 2 * N];
-      const rot = atan2(gxv, gzv) + Math.PI / 2;
-      const Y = sample(h, c.x, c.z);
-      const b = new Builder(c.x, Y, c.z, rot);
-      const spots = aqueduct(b, rng.fork("aqueduct"), (lx) => sample(h, b.wx(lx, 0), b.wz(lx, 0)) - Y);
-      const ids = [addStructure(ctx, StructureKind.Arch, b)];
-      sites.push({ kind: "aqueduct", x: c.x, z: c.z, y: Y, rot, radius: 12, structureIds: ids, spots, door: { x: b.wx(0, 5), z: b.wz(0, 5) } });
+      if (style.pacific) {
+        const st = stats(ctx, c.x, c.z, R);
+        flatten(ctx, c.x, c.z, R, 8, st.mean);
+        // the veranda looks downhill
+        const rot = atan2(-(h[i + 2] - h[i - 2]), -(h[i + 2 * N] - h[i - 2 * N]));
+        const b = new Builder(c.x, st.mean, c.z, rot);
+        const spots = manor(b, rng.fork("manor"), style);
+        const ids = [addStructure(ctx, StructureKind.Manor, b)];
+        sites.push({ kind: "manor", x: c.x, z: c.z, y: st.mean, rot, radius: 12, structureIds: ids, spots, door: { x: b.wx(0, 10.5), z: b.wz(0, 10.5) } });
+      } else {
+        // run along the contour
+        const gxv = h[i + 2] - h[i - 2], gzv = h[i + 2 * N] - h[i - 2 * N];
+        const rot = atan2(gxv, gzv) + Math.PI / 2;
+        const Y = sample(h, c.x, c.z);
+        const b = new Builder(c.x, Y, c.z, rot);
+        const spots = aqueduct(b, rng.fork("aqueduct"), (lx) => sample(h, b.wx(lx, 0), b.wz(lx, 0)) - Y);
+        const ids = [addStructure(ctx, StructureKind.Arch, b)];
+        sites.push({ kind: "aqueduct", x: c.x, z: c.z, y: Y, rot, radius: 12, structureIds: ids, spots, door: { x: b.wx(0, 5), z: b.wz(0, 5) } });
+      }
     }
   }
   // ---- jetties at the heads of coves ---------------------------------------------
   for (const cv of ctx.coves) {
-    // walk from the head pool inland to the shore
+    // walk from the head pool inland to the shore; where a stream runs into
+    // the head, step sideways so the jetty stands beside its mouth, not in it
     let bx = 0, bz = 0, found = false;
-    for (let t = 0; t < cv.wid * 2.5; t += 1) {
-      const x = cv.x - cv.dx * t, z = cv.z - cv.dz * t;
-      if (sample(h, x, z) > 0.35) { bx = x; bz = z; found = true; break; }
+    for (const side of [0, 0.8, -0.8]) {
+      const sx = -cv.dz * cv.wid * side, sz = cv.dx * cv.wid * side;
+      for (let t = 0; t < cv.wid * 2.5; t += 1) {
+        const x = cv.x + sx - cv.dx * t, z = cv.z + sz - cv.dz * t;
+        if (ctx.waterDist[toI(z) * N + toI(x)] < 4) break;
+        if (sample(h, x, z) > 0.35) { bx = x; bz = z; found = true; break; }
+      }
+      if (found) break;
     }
     if (!found || ctx.blocked[toI(bz) * N + toI(bx)] & (BLOCK_STRUCT | BLOCK_DOCK)) continue;
     let len = 5;
@@ -422,7 +338,6 @@ export function sitesStage(ctx: Ctx, rng: Rng): void {
   }
 
   slopeGrid(ctx.height, ctx.slope);
-  void cos;
 }
 
 /** Cells of the largest connected land mass. */

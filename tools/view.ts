@@ -201,8 +201,19 @@ async function main() {
     rivers: () => world.rivers.map((r) => ({ n: r.points.length, first: [r.points[0].x, r.points[0].y, r.points[0].z, r.points[0].width].map((v) => +v.toFixed(1)), last: [r.points[r.points.length - 1].x, r.points[r.points.length - 1].y, r.points[r.points.length - 1].z].map((v) => +v.toFixed(1)) })),
     water: () => { let flowing = 0, still = 0; for (let i = 0; i < world.water.length; i++) if (world.water[i] > -999) { if (Math.hypot(world.flow[i * 2], world.flow[i * 2 + 1]) > 0.05) flowing++; else still++; } return { flowing, still, lakes: world.lakes, falls: world.waterfalls }; },
     probe: (x: number, z: number) => { const ix = Math.round((x + 512) / 2), iz = Math.round((z + 512) / 2); const i = iz * 513 + ix; return { h: world.height[i], water: world.water[i], flow: [world.flow[i * 2], world.flow[i * 2 + 1]], biome: world.biome[i] }; },
-    caves: () => world.caves.map((c) => ({ nodes: c.nodes.map((n) => [n.x, n.y, n.z, n.r].map((v) => +v.toFixed(1))), edges: c.edges, entrances: c.entrances.map((e) => [e.x, e.y, e.z].map((v) => +v.toFixed(1))) })),
+    caves: () => world.caves.map((c) => ({ nodes: c.nodes.map((n) => [n.x, n.y, n.z, n.r].map((v) => +v.toFixed(1))), edges: c.edges, entrances: c.entrances.map((e) => [e.x, e.y, e.z].map((v) => +v.toFixed(1))), sky: c.entrances.filter((e) => e.sky).map((e) => [e.x, e.y, e.z].map((v) => +v.toFixed(1)))[0] ?? null, rocks: c.rocks?.length ?? 0 })),
     structs: () => world.structures.map((s) => [s.kind, Math.round(s.x), Math.round(s.y), Math.round(s.z), s.solids.length]),
+    /** Camera [x, y, z, yaw, pitch] a few meters from the i-th (spread out) instance of a prop kind, looking at it. */
+    nearProp: (kind: number, i = 0, dist = 7) => {
+      const ps = world.props.find((p) => p.kind === kind);
+      if (!ps || ps.count === 0) return null;
+      const k = Math.floor(((i * 0.618034) % 1) * ps.count);
+      const x = ps.data[k * 5], y = ps.data[k * 5 + 1], z = ps.data[k * 5 + 2], sc = ps.data[k * 5 + 4];
+      const a = i * 2.1, d = dist * Math.max(1, sc);
+      const cx = x + Math.sin(a) * d, cz = z + Math.cos(a) * d;
+      const cy = y + 1.7 + sc;
+      return [cx, cy, cz, THREE.MathUtils.radToDeg(Math.atan2(x - cx, z - cz)), THREE.MathUtils.radToDeg(Math.atan2(y + sc - cy, d))];
+    },
     tour: () => tour.map((v, i) => `${i}: ${v.name}`),
     splat: (n = 20) => splatAhead(n),
     underwater: (v: boolean | null) => view.setUnderwater(v),

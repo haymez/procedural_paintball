@@ -35,6 +35,33 @@ function openWater(): { x: number; z: number; yaw: number } {
   throw new Error("no open water");
 }
 
+/**
+ * A gentle beach and an open-water start straight out to sea from it: marching in from the
+ * world edge along a ray, the first land must rise gradually (no cliff) out of >= 3 m deep water.
+ */
+function beachApproach(): { x: number; z: number; yaw: number; tx: number; tz: number } {
+  for (let k = 0; k < 64; k++) {
+    const a = (k / 64) * Math.PI * 2;
+    const ux = Math.sin(a), uz = Math.cos(a);
+    let shore = -1;
+    for (let r = 480; r > 40; r -= 1) if (terrainHeight(world, ux * r, uz * r) > 0.5) { shore = r; break; }
+    if (shore < 0 || shore > 330) continue;
+    let ok = true;
+    // a beach: low land behind the waterline, no wall in the first meters of water
+    for (let r = shore - 12; r < shore && ok; r += 2) if (terrainHeight(world, ux * r, uz * r) > 2.5) ok = false;
+    for (let r = shore; r < shore + 10 && ok; r += 2) {
+      const h0 = terrainHeight(world, ux * r, uz * r), h1 = terrainHeight(world, ux * (r + 2), uz * (r + 2));
+      if (h0 - h1 > 1.6) ok = false;
+    }
+    // and a clear run in: no reef or rock breaking the surface on the way
+    for (let t = 12; t < 125 && ok; t += 3) if (terrainHeight(world, ux * (shore + t), uz * (shore + t)) > -0.8) ok = false;
+    if (!ok) continue;
+    const r0 = shore + 120;
+    return { x: ux * r0, z: uz * r0, yaw: a + Math.PI, tx: ux * (shore - 15), tz: uz * (shore - 15) };
+  }
+  throw new Error("no gentle beach");
+}
+
 function boat(kind: VehicleKind, x: number, z: number, yaw: number): VehicleState {
   return createVehicleState(0, { kind, x, y: 0, z, rotY: yaw }, env);
 }
@@ -70,12 +97,12 @@ describe("boats", () => {
   });
 
   it("slide up onto the beach, stop, and back off into the water", () => {
-    const o = openWater();
+    const o = beachApproach();
     for (const kind of [VehicleKind.Jetski, VehicleKind.Speedboat]) {
-      // full throttle at the island centre from open water
-      const v = boat(kind, o.x, o.z, o.yaw + Math.PI);
+      // full throttle from open water at a gentle beach
+      const v = boat(kind, o.x, o.z, o.yaw);
       for (let i = 0; i < 60 * 40; i++) {
-        let d = Math.atan2(-v.x, -v.z) - v.yaw;
+        let d = Math.atan2(o.tx - v.x, o.tz - v.z) - v.yaw;
         d = Math.atan2(Math.sin(d), Math.cos(d));
         stepVehicle(v, cmd({ moveZ: 1, moveX: -Math.max(-1, Math.min(1, d * 2)) }), TICK_DT, env);
         expect(sdf(env.cw, v.x, v.y + 0.4, v.z)).toBeGreaterThan(-0.05);

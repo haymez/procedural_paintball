@@ -309,7 +309,7 @@ function runSingle() {
       ziplines: `${w.ziplines.length}`,
       spawns: `${w.spawns.length}`,
     };
-    const structNames = ["cottage", "hamlet", "lighthouse", "chapel", "watchtower", "boathouse", "dock", "vespa shed", "bridge", "well", "arch"];
+    const structNames = ["cottage", "hamlet", "lighthouse", "chapel", "watchtower", "boathouse", "dock", "vespa shed", "bridge", "well", "arch", "house", "store", "hotel", "church", "hale", "water tower", "stall", "wall", "sugar mill", "heiau", "manor"];
     const details: Partial<Record<LayerKey, string>> = {
       structures: [...sk.entries()].sort((a, b) => a[0] - b[0]).map(([k, n]) => `${structNames[k] ?? k} ${n}`).join(" · "),
       pickups: D.PICKUP_INFO.filter((p) => pk.has(p.kind))

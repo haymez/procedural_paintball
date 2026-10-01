@@ -1,0 +1,26 @@
+- grass004 — ambientCG (CC0) — terrain grass ground (packed: _c color, _nh normal xy + height)
+- dark_rock — Poly Haven (CC0) — terrain cliff faces, volcanic islands
+- lichen_rock — Poly Haven (CC0) — terrain rock outcrops, volcanic islands
+- rock_face_03 — Poly Haven (CC0) — terrain cliff faces, limestone islands
+- rock_boulder_cracked — Poly Haven (CC0) — terrain rock outcrops, limestone islands
+- forest_leaves_02 — Poly Haven (CC0) — rainforest floor
+- forest_leaves_04 — Poly Haven (CC0) — Mediterranean forest floor
+- coast_sand_01 — Poly Haven (CC0) — beach sand / seabed
+- red_laterite_soil_stones — Poly Haven (CC0) — red dirt paths, volcanic islands
+- rocky_trail — Poly Haven (CC0) — dirt paths (limestone islands), village ground
+- brown_planks_05 — Poly Haven (CC0) — structures: painted lap siding (village houses, store, hotel, church)
+- corrugated_iron — Poly Haven (CC0) — structures: corrugated iron roofs
+- reed_roof_04 — Poly Haven (CC0) — structures: thatch (hale, canoe house, stalls)
+- rock_wall_13 — Poly Haven (CC0) — structures: lava-rock masonry (foundations, walls, heiau)
+- old_stone_wall — Poly Haven (CC0) — structures: fieldstone (chapel, watchtower, aqueduct, ruins)
+- painted_plaster_wall — Poly Haven (CC0) — structures: plaster / stucco walls
+- broken_brick_wall — Poly Haven (CC0) — structures: brick (sugar mill, chimneys, exposed brick)
+- brown_planks_03 — Poly Haven (CC0) — structures: weathered bare planks (docks, posts, sheds)
+- clay_roof_tiles_02 — Poly Haven (CC0) — structures: terracotta roof tiles
+- rusty_metal_05 — Poly Haven (CC0) — structures: rusted iron (mill machinery, water tank, roof rust)
+- palm_tree_bark — Poly Haven (CC0) — coconut palm trunks (props, 512px diffuse)
+- chinese_hackberry_bark — Poly Haven (CC0) — smooth tropical tree bark: rainforest trees, banyan/kapok, tree ferns (props, 512px diffuse)
+- bark_brown_02 — Poly Haven (CC0) — furrowed bark: holm oak, olive, lemon, mangrove, logs, driftwood (props, 512px diffuse)
+- pine_bark — Poly Haven (CC0) — plated pine bark: Aleppo and stone pines, cypress (props, 512px diffuse)
+- gray_rocks — Poly Haven (CC0) — cave floors (rubble), volcanic islands
+- rock_surface — Poly Haven (CC0) — smooth basalt cave walls (tinted dark), volcanic islands

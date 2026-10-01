@@ -12,16 +12,16 @@ import {
 type Rule = [PropKind, number, number, number]; // kind, expected per 2 m cell, min scale, max scale
 
 const RULES: Partial<Record<Biome, Rule[]>> = {
-  [Biome.Meadow]: [[PropKind.GrassTuft, 3.2, 0.5, 1.0], [PropKind.Flowers, 0.45, 0.8, 1.3], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.RockSmall, 0.02, 0.6, 1.2]],
-  [Biome.PalmGrove]: [[PropKind.GrassTuft, 2.2, 0.5, 1.0], [PropKind.Flowers, 0.1, 0.8, 1.2], [PropKind.Fern, 0.1, 0.7, 1.2], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.Bougainvillea, 0.004, 0.8, 1.2]],
+  [Biome.Meadow]: [[PropKind.GrassTuft, 0.45, 0.6, 1.1], [PropKind.Flowers, 0.45, 0.8, 1.3], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.RockSmall, 0.02, 0.6, 1.2]],
+  [Biome.PalmGrove]: [[PropKind.GrassTuft, 0.3, 0.6, 1.1], [PropKind.Flowers, 0.1, 0.8, 1.2], [PropKind.Fern, 0.1, 0.7, 1.2], [PropKind.Bush, 0.1, 0.8, 1.5], [PropKind.Bougainvillea, 0.004, 0.8, 1.2]],
   // jungle floor: ferns and big-leaf understory everywhere, a few logs, hardly any grass
-  [Biome.Jungle]: [[PropKind.Fern, 0.75, 0.8, 1.6], [PropKind.Understory, 0.2, 0.8, 1.4], [PropKind.GrassTuft, 0.12, 0.6, 1.0], [PropKind.Bush, 0.05, 0.8, 1.4], [PropKind.Log, 0.004, 0.8, 1.3], [PropKind.RockSmall, 0.015, 0.6, 1.2], [PropKind.Flowers, 0.01, 0.8, 1.1]],
+  [Biome.Jungle]: [[PropKind.Fern, 0.75, 0.8, 1.6], [PropKind.Understory, 0.2, 0.8, 1.4], [PropKind.TiPlant, 0.025, 0.7, 1.2], [PropKind.GrassTuft, 0.05, 0.6, 1.0], [PropKind.Bush, 0.05, 0.8, 1.4], [PropKind.Log, 0.004, 0.8, 1.3], [PropKind.RockSmall, 0.015, 0.6, 1.2], [PropKind.Flowers, 0.01, 0.8, 1.1]],
   // Mediterranean woodland: maquis thickets, sparse ferns, dry grass in clearings, logs and stones
-  [Biome.Forest]: [[PropKind.Bush, 0.12, 0.7, 1.4], [PropKind.GrassTuft, 0.45, 0.5, 0.9], [PropKind.Fern, 0.08, 0.7, 1.1], [PropKind.Log, 0.005, 0.8, 1.3], [PropKind.RockSmall, 0.05, 0.6, 1.3], [PropKind.Flowers, 0.04, 0.7, 1.0]],
-  [Biome.Scrub]: [[PropKind.GrassTuft, 1.4, 0.5, 0.9], [PropKind.Bush, 0.14, 0.6, 1.2], [PropKind.RockSmall, 0.08, 0.6, 1.3], [PropKind.Agave, 0.02, 0.7, 1.1], [PropKind.Flowers, 0.05, 0.7, 1.0]],
-  [Biome.Riverbank]: [[PropKind.GrassTuft, 0.9, 0.8, 1.3], [PropKind.Fern, 0.25, 0.8, 1.3], [PropKind.Reed, 0.2, 0.8, 1.3], [PropKind.Flowers, 0.06, 0.8, 1.2]],
-  [Biome.Village]: [[PropKind.GrassTuft, 0.25, 0.6, 1.0], [PropKind.Flowers, 0.12, 0.8, 1.2]],
-  [Biome.Mangrove]: [[PropKind.Fern, 0.2, 0.8, 1.2], [PropKind.Reed, 0.15, 0.8, 1.2], [PropKind.GrassTuft, 0.3, 0.7, 1.1]],
+  [Biome.Forest]: [[PropKind.Bush, 0.12, 0.7, 1.4], [PropKind.GrassTuft, 0.22, 0.5, 0.9], [PropKind.Fern, 0.08, 0.7, 1.1], [PropKind.Log, 0.005, 0.8, 1.3], [PropKind.RockSmall, 0.05, 0.6, 1.3], [PropKind.Flowers, 0.04, 0.7, 1.0]],
+  [Biome.Scrub]: [[PropKind.GrassTuft, 0.55, 0.5, 1.0], [PropKind.Bush, 0.14, 0.6, 1.2], [PropKind.RockSmall, 0.08, 0.6, 1.3], [PropKind.Agave, 0.02, 0.7, 1.1], [PropKind.Flowers, 0.05, 0.7, 1.0]],
+  [Biome.Riverbank]: [[PropKind.GrassTuft, 0.4, 0.8, 1.3], [PropKind.Fern, 0.25, 0.8, 1.3], [PropKind.Reed, 0.2, 0.8, 1.3], [PropKind.Flowers, 0.06, 0.8, 1.2]],
+  [Biome.Village]: [[PropKind.GrassTuft, 0.05, 0.6, 1.0], [PropKind.Flowers, 0.12, 0.8, 1.2]],
+  [Biome.Mangrove]: [[PropKind.Fern, 0.2, 0.8, 1.2], [PropKind.Reed, 0.15, 0.8, 1.2], [PropKind.GrassTuft, 0.2, 0.7, 1.1]],
   [Biome.Rock]: [[PropKind.RockSmall, 0.05, 0.6, 1.3], [PropKind.GrassTuft, 0.12, 0.6, 1.0]],
   [Biome.Cliff]: [[PropKind.GrassTuft, 0.05, 0.6, 1.0]],
   [Biome.Beach]: [[PropKind.GrassTuft, 0.04, 0.6, 1.0]],

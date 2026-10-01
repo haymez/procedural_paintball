@@ -59,6 +59,10 @@ export function worldChecksum(world: World): number {
     for (const n of c.nodes) { H.f(n.x); H.f(n.y); H.f(n.z); H.f(n.r); }
     for (const [a, b] of c.edges) { H.int(a); H.int(b); }
     for (const e of c.entrances) { H.f(e.x); H.f(e.y); H.f(e.z); }
+    // rock features, skylight shafts and the wall style all change collision
+    for (const s of c.shafts ?? []) { H.f(s.x); H.f(s.z); H.f(s.y0); H.f(s.y1); H.f(s.r); }
+    for (const r of c.rocks ?? []) { H.f(r.ax); H.f(r.ay); H.f(r.az); H.f(r.bx); H.f(r.by); H.f(r.bz); H.f(r.ra); H.f(r.rb); H.int(r.shell ? 1 : 0); }
+    H.int(c.style === "lava" ? 1 : 0);
   }
   for (const p of world.pickups) { H.int(p.kind); H.f(p.x); H.f(p.y); H.f(p.z); }
   for (const s of world.spawns) { H.f(s.x); H.f(s.y); H.f(s.z); }

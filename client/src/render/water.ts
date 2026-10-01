@@ -6,8 +6,7 @@
 // game can bob boats / detect submersion consistently.
 import * as THREE from "three";
 import { CELL, GRID_RES, NO_WATER, WORLD_HALF, type World } from "../../../shared/world/types";
-import { ENV_PARS, NOISE_FNS, SKY_FN } from "./glsl";
-import { PALETTE } from "./style";
+import { CLOUD_FN, ENV_PARS, NOISE_FNS, SKY_FN } from "./glsl";
 import { GRID_UV_GLSL, type WorldTextures } from "./worldTextures";
 
 export interface WaterOptions { segments: number }
@@ -44,12 +43,93 @@ float waveH(vec2 p, float t, out vec2 grad) {
 }
 `;
 
+/**
+ * Tiling ripple normal map: a periodic sum of sines with integer wave vectors
+ * (so it wraps), amplitude falling with frequency. rgb = normal * 0.5 + 0.5.
+ */
+function makeWaterNormals(size = 256): THREE.DataTexture {
+  let s = 977;
+  const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const waves: { kx: number; kz: number; a: number; ph: number }[] = [];
+  for (let i = 0; i < 48; i++) {
+    const ang = rnd() * Math.PI * 2;
+    const f = 2 + Math.floor(Math.pow(rnd(), 1.6) * 22);
+    const kx = Math.round(Math.cos(ang) * f), kz = Math.round(Math.sin(ang) * f);
+    if (kx === 0 && kz === 0) continue;
+    waves.push({ kx, kz, a: 1 / Math.pow(Math.hypot(kx, kz), 1.35), ph: rnd() * Math.PI * 2 });
+  }
+  const data = new Uint8Array(size * size * 4);
+  const TAU = Math.PI * 2;
+  let maxG = 1e-6;
+  const gx = new Float32Array(size * size), gz = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const u = x / size, v = y / size;
+    let dx = 0, dz = 0;
+    for (const w of waves) {
+      const c = Math.cos(TAU * (w.kx * u + w.kz * v) + w.ph) * w.a;
+      dx += c * w.kx; dz += c * w.kz;
+    }
+    const i = y * size + x;
+    gx[i] = dx; gz[i] = dz;
+    maxG = Math.max(maxG, Math.abs(dx), Math.abs(dz));
+  }
+  for (let i = 0; i < size * size; i++) {
+    const nx = -gx[i] / maxG * 0.9, nz = -gz[i] / maxG * 0.9;
+    const ny = Math.sqrt(Math.max(0, 1 - nx * nx - nz * nz));
+    data[i * 4] = Math.round((nx * 0.5 + 0.5) * 255);
+    data[i * 4 + 1] = Math.round((nz * 0.5 + 0.5) * 255);
+    data[i * 4 + 2] = Math.round((ny * 0.5 + 0.5) * 255);
+    data[i * 4 + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 8;
+  t.needsUpdate = true;
+  return t;
+}
+
 const COMMON_WATER = /* glsl */ `
 ${ENV_PARS}
 ${NOISE_FNS}
 ${SKY_FN}
+${CLOUD_FN}
 ${GRID_UV_GLSL}
 uniform sampler2D tHeight;
+uniform sampler2D uCanopy;
+uniform sampler2D tWaterN;
+// ripple normal perturbation (xz) from three scrolling layers of the ripple map
+vec2 ripples(vec2 p, float t, float fine) {
+  vec2 w = uWind;
+  vec2 a = texture2D(tWaterN, p / 31.0 + w * t * 0.011).xy * 2.0 - 1.0;
+  vec2 b = texture2D(tWaterN, mat2(0.6, -0.8, 0.8, 0.6) * p / 11.0 - vec2(w.y, -w.x) * t * 0.019).xy * 2.0 - 1.0;
+  if (fine < 0.01) return a * 0.5;
+  vec2 c = texture2D(tWaterN, mat2(-0.8, 0.6, -0.6, -0.8) * p / 4.3 + w * t * 0.04).xy * 2.0 - 1.0;
+  return a * 0.5 + (b * 0.4 + c * 0.3) * fine;
+}
+// organic foam streaks: ridged contours of two drifting fbm layers, patchy
+float foamLace(vec2 p, float t) {
+  float a = noiseT(p * 0.07 + vec2(t * 0.009, -t * 0.006)).r;
+  float b = noiseT(p * 0.19 - vec2(t * 0.012, t * 0.01) + 0.31).r;
+  float r1 = 1.0 - smoothstep(0.0, 0.07, abs(a - 0.5));
+  float r2 = 1.0 - smoothstep(0.0, 0.05, abs(b - 0.5));
+  float patchy = smoothstep(0.35, 0.65, noiseT(p * 0.031 + 0.7).a);
+  return clamp(max(r1 * 0.9, r2 * 0.7) * (0.4 + 0.6 * patchy) + smoothstep(0.62, 0.8, b) * 0.35, 0.0, 1.0);
+}
+// sky + clouds seen in a reflection from p
+vec3 reflSky(vec3 p, vec3 r) {
+  vec3 c = skyColor(r, 0.0);
+  // ripples blur reflected clouds: soft and faint (one density tap, no lighting), gone toward the horizon
+  float k = 0.35 * smoothstep(0.05, 0.3, r.y);
+  if (k > 0.0 && uCloud.x > 0.0) {
+    float d = cloudDensity(p.xz + r.xz * ((uCloud.w - p.y) / r.y));
+    vec3 cc = mix(uSkyHorizon * 0.85, vec3(1.0), 0.7);
+    c = mix(c, cc, d * k);
+  }
+  return c;
+}
 float terrainHeight(vec2 xz) {
   vec2 uv = gridUV(xz);
   float h = texture2D(tHeight, clamp(uv, vec2(0.0), vec2(1.0))).r;
@@ -57,13 +137,16 @@ float terrainHeight(vec2 xz) {
   float outside = max(max(abs(xz.x), abs(xz.y)) - ${(WORLD_HALF - 8).toFixed(1)}, 0.0);
   return mix(h, -80.0, clamp(outside / 60.0, 0.0, 1.0));
 }
-// distance (m) to the waterline estimated from depth and the seabed slope
-float shoreDist(vec2 xz, float depth) {
+// seabed slope (m/m)
+float seabedGrad(vec2 xz) {
   float e = 1.5;
   float gx = terrainHeight(xz + vec2(e, 0.0)) - terrainHeight(xz - vec2(e, 0.0));
   float gz = terrainHeight(xz + vec2(0.0, e)) - terrainHeight(xz - vec2(0.0, e));
-  float g = length(vec2(gx, gz)) / (2.0 * e);
-  return depth / max(g, 0.015);
+  return length(vec2(gx, gz)) / (2.0 * e);
+}
+// distance (m) to the waterline estimated from depth and the seabed slope
+float shoreDist(vec2 xz, float depth) {
+  return depth / max(seabedGrad(xz), 0.015);
 }
 vec3 detailNormal(vec2 p, float t, float strength) {
   vec2 w = uWind;
@@ -103,7 +186,8 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
     oceanGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     oceanGeo.setIndex(idx);
   }
-  const oceanUniforms = { ...env, tHeight: { value: tex.height } };
+  const waterN = makeWaterNormals();
+  const oceanUniforms = { ...env, tHeight: { value: tex.height }, tWaterN: { value: waterN } };
   const oceanMat = new THREE.ShaderMaterial({
     uniforms: oceanUniforms,
     transparent: true,
@@ -134,63 +218,74 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
         float depth = max(-th, 0.0);
         vec3 v = normalize(cameraPosition - vW);
         float camD = length(cameraPosition - vW);
-        float detailFade = 1.0 - smoothstep(60.0, 450.0, camD);
-        vec3 n = normalize(vec3(-vGrad.x, 1.0, -vGrad.y) + detailNormal(vW.xz, uTime, 2.6 * detailFade + 0.5));
+        float fine = 1.0 - smoothstep(30.0, 320.0, camD);
+        vec2 rp = ripples(vW.xz, uTime, fine) * mix(0.08, 0.26, fine);
+        vec3 n = normalize(vec3(-vGrad.x + rp.x, 1.0, -vGrad.y + rp.y));
         bool below = !gl_FrontFacing;
         if (below) n = -n;
 
-        float d1 = smoothstep(1.0, 7.0, depth);
-        float d2 = smoothstep(4.0, 22.0, depth);
-        vec3 shallowC = ${lin(0x2fd8d2)} * 1.1;
-        vec3 seaC = ${lin(PALETTE.sea)};
-        vec3 deepC = ${lin(PALETTE.deepSea)} * 0.85;
-        vec3 wc = mix(mix(shallowC, seaC, d1), deepC, d2);
-        // subtle crest lightening + scattered light
-        wc *= 0.8 + 0.25 * max(uSunDir.y, 0.0) + vWave * 0.6;
+        // water body: clear turquoise over sand, blue over the shelf, navy offshore
+        float d1 = smoothstep(0.8, 7.0, depth);
+        float d2 = smoothstep(6.0, 34.0, depth);
+        vec3 body = mix(mix(${lin(0x2fb3ad)}, ${lin(0x15739f)}, d1), ${lin(0x0a3463)}, d2);
+        body *= 0.55 + 0.45 * max(uSunDir.y, 0.0);
+        // light through the backs of swells
+        float sss = pow(max(dot(-v, uSunDir) * 0.5 + 0.5, 0.0), 4.0) * max(vWave * 4.0 + 0.4, 0.0);
+        body += ${lin(0x2fb3a0)} * sss * 0.35 * (1.0 - d2);
 
         float nv = max(dot(n, v), 0.0);
         float fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
         vec3 r = reflect(-v, n);
         r.y = abs(r.y);
-        vec3 refl = skyColor(r, 0.0);
-        vec3 col = mix(wc, refl, fres * 0.85);
-        float alpha = mix(0.45, 1.0, smoothstep(0.0, 8.0, depth));
-        alpha = mix(0.15, alpha, smoothstep(0.0, 0.6, depth));
-        alpha = max(alpha, fres * 0.9);
+        vec3 refl = reflSky(vW, r) * (1.0 - grotto * 0.94); // a cave roof, not sky, above grotto water
+        // how much of the seabed shows through: Beer-Lambert over the view path
+        float path = depth / max(v.y, 0.12);
+        float a = 1.0 - exp(-path * 0.32);
+        a = mix(a, 1.0, smoothstep(14.0, 40.0, depth));
+        float alpha = fres + (1.0 - fres) * a;
+        vec3 col = (refl * fres + body * a * (1.0 - fres)) / max(alpha, 1e-4);
 
-        // sun glitter (HDR, feeds bloom)
+        // sun glint (HDR, feeds bloom)
         vec3 hv = normalize(uSunDir + v);
         float nh = max(dot(n, hv), 0.0);
-        float spark = smoothstep(0.6, 0.85, noiseT(vW.xz * 0.35 + uTime * 0.05).b);
-        col += uSunColor * (pow(nh, 2000.0) * 30.0 * spark + pow(nh, 220.0) * 0.4);
+        float spark = smoothstep(0.55, 0.85, noiseT(vW.xz * 0.35 + uTime * 0.05).b);
+        vec3 glint = uSunColor * (pow(nh, 1400.0) * 18.0 * (0.25 + spark) + pow(nh, 160.0) * 0.35);
+        col += glint / max(alpha, 0.35) * 0.9;
 
-        // shoreline foam: solid edge + bands rolling in
-        float nz = noiseT(vW.xz * 0.05 + vec2(uTime * 0.01, 0.0)).r;
-        float nf = noiseT(vW.xz * 0.21 - vec2(0.0, uTime * 0.02)).b;
-        float sd = depth < 3.0 ? shoreDist(vW.xz, depth) : 99.0;
-        float shore = 1.0 - smoothstep(2.0, 14.0, sd);
-        float bands = sin(sd * 0.9 - uTime * 1.3 + nz * 5.0);
-        float band = smoothstep(0.86, 0.98, bands) * shore * smoothstep(0.3, 0.65, nf + 0.15);
-        float edge = 1.0 - smoothstep(0.0, 1.2 + 1.2 * nf, sd - vWave * 3.0);
-        float lace = smoothstep(0.35, 0.62, noiseT(vW.xz * 0.45 + vec2(uTime * 0.03, -uTime * 0.02)).r + nf * 0.25);
-        float swash = 1.0 - smoothstep(0.0, 0.4, sd);
-        float foam = max(band * 0.9, edge * mix(0.35, 1.0, lace) * (1.0 - swash * 0.5));
-        foam *= smoothstep(-2.0, 0.0, th + 2.0); // only near actual ground
-        vec3 foamC = vec3(1.0, 0.99, 0.96) * (0.75 + 0.35 * max(uSunDir.y, 0.0));
-        col = mix(col, foamC, foam);
-        alpha = max(alpha, foam);
+        // shoreline foam: lacy swash at the edge + broken lines rolling in
+        if (depth < 3.5) { // shoreline foam (nothing to break on further out)
+          float sgrad = depth < 3.5 ? seabedGrad(vW.xz) : 1.0;
+          float sd = depth < 3.5 ? depth / max(sgrad, 0.015) : 99.0;
+          // dead-flat sea-level ground (wet flats, carved mouths): no surf line to break on
+          float flatK = smoothstep(0.004, 0.02, sgrad);
+          float shore = 1.0 - smoothstep(2.0, 18.0, sd);
+          float nz = noiseT(vW.xz * 0.045 + vec2(uTime * 0.008, 0.0)).r;
+          // lacy foam: cell edges broken up by fbm so it never reads as a regular net
+          float lace = foamLace(vW.xz, uTime);
+          float bubbles = smoothstep(0.45, 0.75, noiseT(vW.xz * 0.9 + uTime * 0.03).b);
+          float ph = sd * 0.5 - uTime * 1.15 + nz * 6.0;
+          float crest = fract(ph / 6.2832);
+          float wave = smoothstep(0.82, 0.97, crest) + (1.0 - smoothstep(0.0, 0.35, crest)) * 0.55; // crest, then a fading trail
+          float band = wave * shore * mix(0.35, 1.0, lace) * smoothstep(0.25, 0.6, nz + 0.2);
+          float edge = 1.0 - smoothstep(0.0, 1.0 + 1.6 * nz, sd - vWave * 3.0);
+          float foam = max(band * 0.75, edge * mix(0.45, 1.0, max(lace, bubbles))) * flatK;
+          foam *= smoothstep(-2.0, 0.0, th + 2.0); // only near actual ground
+          vec3 foamC = vec3(0.96, 0.97, 0.95) * (0.65 + 0.4 * max(uSunDir.y, 0.0));
+          col = mix(col, foamC, clamp(foam, 0.0, 1.0));
+          alpha = max(alpha, clamp(foam, 0.0, 1.0));
+        }
 
         if (grotto > 0.0) {
-          // dim, glassy cave water with a faint teal glow
-          vec3 cw = vec3(0.02, 0.1, 0.12) + vec3(0.05, 0.25, 0.24) * smoothstep(0.5, 0.9, noiseT(vW.xz * 0.2 + uTime * 0.02).r);
+          // dim, glassy cave water
+          vec3 cw = vec3(0.006, 0.03, 0.04) + vec3(0.012, 0.05, 0.05) * smoothstep(0.5, 0.9, noiseT(vW.xz * 0.2 + uTime * 0.02).r);
           col = mix(col, cw, grotto);
           alpha = mix(alpha, 0.92, grotto);
         }
         if (below) {
           // looking up from underwater: bright window + total internal reflection
           float win = smoothstep(0.55, 0.8, nv);
-          col = mix(vec3(0.04, 0.3, 0.36), vec3(0.55, 0.95, 1.0) * 1.3, win);
-          col += vec3(0.3, 0.5, 0.5) * smoothstep(0.6, 0.9, noiseT(vW.xz * 0.12 + uTime * 0.02).r) * win;
+          col = mix(vec3(0.03, 0.22, 0.28), vec3(0.55, 0.9, 1.0) * 1.2, win);
+          col += vec3(0.25, 0.4, 0.4) * smoothstep(0.6, 0.9, noiseT(vW.xz * 0.12 + uTime * 0.02).r) * win;
           alpha = 1.0;
         }
         gl_FragColor = vec4(col, alpha);
@@ -204,7 +299,7 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
 
   // ---------------------------------------------------------- fresh water
   const freshMat = new THREE.ShaderMaterial({
-    uniforms: { ...env, tHeight: { value: tex.height } },
+    uniforms: { ...env, tHeight: { value: tex.height }, tWaterN: { value: waterN } },
     transparent: true,
     side: THREE.DoubleSide,
     depthWrite: true,
@@ -234,26 +329,38 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
         vec4 nA = noiseT((vW.xz - adv0) * 0.12);
         vec4 nB = noiseT((vW.xz - adv1) * 0.12 + 0.5);
         vec4 nn = mix(nA, nB, wA);
-        vec3 n = normalize(vec3((nn.r - 0.5) * 0.35, 1.0, (nn.b - 0.5) * 0.35) + detailNormal(vW.xz + fdir * t * speed, t, 2.0));
-        if (!gl_FrontFacing) n = -n;
-        float d1 = smoothstep(0.1, 2.5, depth);
-        vec3 wc = mix(vec3(0.16, 0.62, 0.52), vec3(0.04, 0.3, 0.33), d1);
-        wc *= 0.8 + 0.3 * max(uSunDir.y, 0.0);
+        // ripples carried by the current (two phases, like the noise above)
+        vec2 r0 = ripples((vW.xz - adv0) * 1.6, t * 0.5, 1.0), r1 = ripples((vW.xz - adv1) * 1.6 + 7.0, t * 0.5, 1.0);
+        vec2 rp = mix(r0, r1, wA) * (0.05 + 0.14 * smoothstep(0.3, 2.5, speed));
+        vec3 n = normalize(vec3((nn.r - 0.5) * 0.25 + rp.x, 1.0, (nn.b - 0.5) * 0.25 + rp.y));
+        if (cameraPosition.y < vW.y) n = -n; // river strips aren't consistently wound: decide by the eye
+        // clear stream water: tea-green in the shallows, dark green-teal in pools
+        float d1 = smoothstep(0.1, 2.2, depth);
+        vec3 body = mix(${lin(0x5a7a52)}, ${lin(0x1f4a44)}, d1) * (0.55 + 0.45 * max(uSunDir.y, 0.0));
         float nv = max(dot(n, v), 0.0);
         float fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
         vec3 r = reflect(-v, n); r.y = abs(r.y);
-        vec3 col = mix(wc, skyColor(r, 0.0), fres * 0.8);
-        float alpha = mix(0.3, 0.92, smoothstep(0.0, 2.0, depth));
+        vec3 refl = reflSky(vW, r);
+        // under a forest canopy the reflection is of leaves, not sky
+        vec4 C0 = texture2D(uCanopy, (vW.xz + ${WORLD_HALF.toFixed(1)}) / ${(WORLD_HALF * 2).toFixed(1)});
+        float under = clamp((C0.r + C0.a) * 1.4, 0.0, 1.0) * step(vW.y, C0.b);
+        refl = mix(refl, ${lin(0x1c2a14)} * (0.6 + 0.4 * max(uSunDir.y, 0.0)), under * 0.85);
+        float a = 1.0 - exp(-depth / max(v.y, 0.15) * 0.9);
+        float alpha = fres + (1.0 - fres) * a;
+        vec3 col = (refl * fres + body * a * (1.0 - fres)) / max(alpha, 1e-4);
         vec3 hv = normalize(uSunDir + v);
         float nh = max(dot(n, hv), 0.0);
-        col += uSunColor * (pow(nh, 700.0) * 30.0 + pow(nh, 50.0) * 0.25);
+        col += uSunColor * (pow(nh, 900.0) * 22.0 + pow(nh, 80.0) * 0.3) / max(alpha, 0.2);
         // white water: fast current, shallow rocks, banks
+        float lace = foamLace((vW.xz - mix(adv0, adv1, 1.0 - wA) * 1.5) * 1.6, t);
         float streak = smoothstep(0.62, 0.85, nn.r + nn.g * 0.3);
-        float rapids = smoothstep(1.5, 4.0, speed) * streak;
-        float edge = 1.0 - smoothstep(0.0, 0.25 + 0.2 * nn.b, depth);
-        float foam = max(rapids, edge * 0.85) + streak * smoothstep(0.3, 1.2, speed) * 0.25;
-        col = mix(col, vec3(0.97, 0.99, 1.0) * (0.8 + 0.3 * uSunDir.y), clamp(foam, 0.0, 1.0));
+        float rapids = smoothstep(1.5, 4.0, speed) * max(streak, lace * 0.8);
+        // banks foam only where the water moves; still pools just fade out at their edges
+        float edge = (1.0 - smoothstep(0.0, 0.18 + 0.15 * nn.b, depth)) * mix(0.3, 1.0, lace) * smoothstep(0.25, 1.2, speed);
+        float foam = max(rapids, edge * 0.7) + lace * smoothstep(0.6, 2.0, speed) * 0.3;
+        col = mix(col, vec3(0.93, 0.95, 0.94) * (0.7 + 0.35 * uSunDir.y), clamp(foam, 0.0, 1.0));
         alpha = max(alpha, clamp(foam, 0.0, 1.0));
+        alpha *= smoothstep(0.0, 7.0, vUv2.y); // hand over to the sea at the mouth
         gl_FragColor = vec4(col, alpha);
       }`,
   });
@@ -291,6 +398,9 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
         for (let a = 0; a < across - 1; a++) idx.push(b0 + a, b1 + a, b0 + a + 1, b0 + a + 1, b1 + a, b1 + a + 1);
       }
     }
+    // aUv.y becomes the distance left to a sea mouth (rivers ending at sea level fade into the sea)
+    const seaMouth = pts[pts.length - 1].y < 0.4;
+    for (let k = 1; k < uv.length; k += 2) uv[k] = seaMouth ? along - uv[k] : 1e4;
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute("aFlow", new THREE.Float32BufferAttribute(flow, 3));
@@ -327,7 +437,7 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
       vid[k] = pos.length / 3;
       pos.push(-WORLD_HALF + ix * CELL, y, -WORLD_HALF + iz * CELL);
       flow.push(0, 0, 0);
-      uv.push(0, 0);
+      uv.push(0, 1e4); // not a river mouth
       return vid[k];
     };
     for (let iz = 0; iz < GRID_RES - 1; iz++) {
@@ -507,7 +617,7 @@ export function createWater(world: World, tex: WorldTextures, env: Record<string
       void time;
     },
     dispose() {
-      oceanGeo.dispose(); oceanMat.dispose(); freshMat.dispose(); fallMat.dispose(); foamMat.dispose(); mistMat.dispose();
+      oceanGeo.dispose(); oceanMat.dispose(); waterN.dispose(); freshMat.dispose(); fallMat.dispose(); foamMat.dispose(); mistMat.dispose();
       riverGeos.forEach((g) => g.dispose()); fallGeos.forEach((g) => g.dispose()); foamGeo.dispose(); quadGeo.dispose();
     },
   };

@@ -6,9 +6,9 @@ import type { Rng } from "../../math/rng";
 import { atan2 } from "../../math/trig";
 import { smoothstep } from "../../math/vec";
 import type { Ctx } from "../context";
-import { edt, gx, Heap, N, NN, sample, slopeAt, toG } from "../grid";
+import { D8X, D8Z, edt, gx, Heap, N, NN, sample, slopeAt, toG } from "../grid";
 import { CELL, NO_WATER, type River, type RiverPoint } from "../types";
-import { floodOrder } from "./erosion";
+import { floodOrder, SHORE_FLOOR } from "./erosion";
 
 interface Pt {
   x: number;
@@ -58,8 +58,64 @@ interface RiverRun {
   toSea: boolean;
 }
 
+/** Enclosed sub-sea-level pockets smaller than this (cells), or shallow, are filled in; others are lagoons. */
+const MAX_PIT = 100;
+
+/**
+ * Small hollows below sea level that aren't connected to the open sea (beach
+ * dips, erosion pits on a valley floor) acted as river outlets: rivers ended
+ * in them 10–50 m short of the shore, leaving a strip of dry beach between the
+ * stream and the sea. Raise them to dry ground so the drainage carries on to
+ * the real coast. Large, deep enclosed sea-level lagoons are kept.
+ * (Also: shallow sub-sea-level flats left by erosion are dry ground too.)
+ */
+function fillSeaPits(h: Float32Array): void {
+  const label = new Uint8Array(NN); // 1 open sea, 2 enclosed
+  const stack = new Int32Array(NN);
+  let sp = 0;
+  const seed = (i: number) => {
+    if (!label[i] && h[i] <= 0) {
+      label[i] = 1;
+      stack[sp++] = i;
+    }
+  };
+  for (let k = 0; k < N; k++) {
+    seed(k);
+    seed((N - 1) * N + k);
+    seed(k * N);
+    seed(k * N + N - 1);
+  }
+  // 4-connected: a pocket touching the sea only at a corner is still cut off by dry ground
+  const flood = (mark: number, comp: number[] | null) => {
+    while (sp > 0) {
+      const i = stack[--sp];
+      if (comp) comp.push(i);
+      const ix = i % N;
+      if (ix > 0 && !label[i - 1] && h[i - 1] <= 0) { label[i - 1] = mark; stack[sp++] = i - 1; }
+      if (ix < N - 1 && !label[i + 1] && h[i + 1] <= 0) { label[i + 1] = mark; stack[sp++] = i + 1; }
+      if (i >= N && !label[i - N] && h[i - N] <= 0) { label[i - N] = mark; stack[sp++] = i - N; }
+      if (i < NN - N && !label[i + N] && h[i + N] <= 0) { label[i + N] = mark; stack[sp++] = i + N; }
+    }
+  };
+  flood(1, null);
+  const comp: number[] = [];
+  for (let s = 0; s < NN; s++) {
+    if (label[s] || h[s] > 0) continue;
+    label[s] = 2;
+    stack[sp++] = s;
+    comp.length = 0;
+    flood(2, comp);
+    // droplet erosion bottoms out at exactly 0, leaving flat "sea" floors on
+    // valley bottoms; a real lagoon is big and has some depth
+    let lo = 0;
+    for (const i of comp) if (h[i] < lo) lo = h[i];
+    if (comp.length < MAX_PIT || lo > -0.6) for (const i of comp) h[i] = SHORE_FLOOR;
+  }
+}
+
 export function hydrologyStage(ctx: Ctx, rng: Rng): void {
   const h = ctx.height;
+  fillSeaPits(h);
   const order = new Int32Array(NN);
   const rcv = new Int32Array(NN);
   const filled = new Float32Array(NN);
@@ -81,45 +137,48 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
   // a mound across the valley downstream, so the river spills over it.
   const hasCaldera = ctx.peaks.some((p) => p.caldera);
   if (!hasCaldera && rng.chance(0.75)) {
-    let best = -1, ba = 0;
+    // the biggest rivers first: the largest may have no gentle, inland stretch to dam
+    const mouths: number[] = [];
     for (let i = 0; i < NN; i++) {
       const r = rcv[i];
-      if (r >= 0 && h[i] > 0 && h[r] <= 0 && area[i] > ba) {
-        ba = area[i];
-        best = i;
-      }
+      if (r >= 0 && h[i] > 0 && h[r] <= 0 && area[i] >= 2500) mouths.push(i);
     }
-    // path upstream along the biggest tributary (mouth first)
-    const path: number[] = [];
-    for (let cur = best, guard = 0; cur >= 0 && guard < 3000; guard++) {
-      path.push(cur);
-      let nb = -1, na = 0;
-      const cx = cur % N, cz = (cur / N) | 0;
-      for (let dz = -1; dz <= 1; dz++)
-        for (let dx = -1; dx <= 1; dx++) {
-          if (!dx && !dz) continue;
-          const x = cx + dx, z = cz + dz;
-          if (x < 0 || z < 0 || x >= N || z >= N) continue;
-          const j = z * N + x;
-          if (rcv[j] === cur && area[j] > na) {
-            na = area[j];
-            nb = j;
-          }
-        }
-      if (na < 2500) break;
-      cur = nb;
-    }
+    mouths.sort((a, b) => area[b] - area[a] || a - b);
     const r = rng.range(24, 36);
     const kd = Math.round((r * 0.9) / CELL);
-    let pick = -1, pickS = 1e9;
-    for (let k = kd + 2; k < path.length - 10; k++) {
-      const i = path[k];
-      const hv = h[i];
-      if (hv < 6 || hv > 90 || ctx.coast[i] < 45) continue;
-      const sl = slopeAt(h, i % N, (i / N) | 0) + slopeAt(h, path[k - kd] % N, (path[k - kd] / N) | 0) * 0.5 + (hv < 14 ? 0.3 : 0);
-      if (sl < pickS) {
-        pickS = sl;
-        pick = k;
+    let pick = -1;
+    let path: number[] = [];
+    for (let m = 0; m < mouths.length && m < 4 && pick < 0; m++) {
+      // path upstream along the biggest tributary (mouth first)
+      path = [];
+      for (let cur = mouths[m], guard = 0; cur >= 0 && guard < 3000; guard++) {
+        path.push(cur);
+        let nb = -1, na = 0;
+        const cx = cur % N, cz = (cur / N) | 0;
+        for (let dz = -1; dz <= 1; dz++)
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dz) continue;
+            const x = cx + dx, z = cz + dz;
+            if (x < 0 || z < 0 || x >= N || z >= N) continue;
+            const j = z * N + x;
+            if (rcv[j] === cur && area[j] > na) {
+              na = area[j];
+              nb = j;
+            }
+          }
+        if (na < 2500) break;
+        cur = nb;
+      }
+      let pickS = 1e9;
+      for (let k = kd + 2; k < path.length - 10; k++) {
+        const i = path[k];
+        const hv = h[i];
+        if (hv < 6 || hv > 90 || ctx.coast[i] < 45) continue;
+        const sl = slopeAt(h, i % N, (i / N) | 0) + slopeAt(h, path[k - kd] % N, (path[k - kd] / N) | 0) * 0.5 + (hv < 14 ? 0.3 : 0);
+        if (sl < pickS) {
+          pickS = sl;
+          pick = k;
+        }
       }
     }
     if (pick >= 0) {
@@ -308,25 +367,62 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
   }
   const profiles: Prof[] = [];
 
-  const buildProfile = (run: RiverRun): Prof | null => {
-    let pts: Pt[] = run.cells.map((i) => ({ x: gx(i % N), z: gx((i / N) | 0) }));
-    if (run.toSea) {
-      // extend into the sea along the final direction
-      const a = pts[Math.max(0, pts.length - 6)], b = pts[pts.length - 1];
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const L = Math.sqrt(dx * dx + dz * dz) || 1;
-      pts.push({ x: b.x + (dx / L) * 18, z: b.z + (dz / L) * 18 });
+  /**
+   * Cells from a river mouth out into open water: starts at the mouth's
+   * receiver (the first sea cell) and heads offshore (down the coast distance,
+   * i.e. along a cove's axis inside a cove) until the water is > 1.2 m deep,
+   * so the carved channel and the river ribbon always run into the sea.
+   */
+  const seaTail = (mouth: number): number[] => {
+    const out: number[] = [];
+    let cur = rcv[mouth];
+    let px = mouth % N, pz = (mouth / N) | 0;
+    let walked = 0;
+    for (let guard = 0; guard < 24 && cur >= 0; guard++) {
+      out.push(cur);
+      const cx = cur % N, cz = (cur / N) | 0;
+      const dx0 = cx - px, dz0 = cz - pz;
+      walked += dx0 !== 0 && dz0 !== 0 ? CELL * 1.4142135623730951 : CELL;
+      if ((walked >= 14 && h[cur] < -1.2) || walked >= 40) break;
+      let best = -1, bs = 1e9;
+      for (let d = 0; d < 8; d++) {
+        const nx = cx + D8X[d], nz = cz + D8Z[d];
+        if (nx < 1 || nz < 1 || nx >= N - 1 || nz >= N - 1) continue;
+        if (D8X[d] * dx0 + D8Z[d] * dz0 < 0) continue; // no doubling back
+        const j = nz * N + nx;
+        if (h[j] > 0) continue;
+        const sc = ctx.coast[j] + h[j] * 0.5;
+        if (sc < bs) {
+          bs = sc;
+          best = j;
+        }
+      }
+      px = cx;
+      pz = cz;
+      cur = best;
     }
+    return out;
+  };
+
+  const buildProfile = (run: RiverRun): Prof | null => {
+    const cells = run.toSea ? run.cells.concat(seaTail(run.cells[run.cells.length - 1])) : run.cells;
+    let pts: Pt[] = cells.map((i) => ({ x: gx(i % N), z: gx((i / N) | 0) }));
     pts = resample(chaikin(pts, 3), 2);
     if (pts.length < 10) return null;
     const n = pts.length;
     const s: number[] = new Array(n), w: number[] = new Array(n), d: number[] = new Array(n), sp: number[] = new Array(n);
-    // total length for mouth boost
+    // where the river meets the sea (first point over open water)
+    let shore = n - 1;
+    if (run.toSea) for (let k = 0; k < n; k++) if (sample(h, pts[k].x, pts[k].z) <= 0) { shore = k; break; }
+    // catchment only grows downstream (smoothed points can sample a cell off
+    // the flow line, and sea cells past the mouth have none): running max
+    let aRun = 0;
     for (let k = 0; k < n; k++) {
       const p = pts[k];
       const ci = Math.round(toG(p.z)) * N + Math.round(toG(p.x));
-      const a = area[ci] > 0 ? area[ci] : 0;
-      const toEnd = (n - 1 - k) * 2;
+      if (area[ci] > aRun) aRun = area[ci];
+      const a = aRun;
+      const toEnd = (shore > k ? shore - k : 0) * 2;
       const boost = run.toSea ? smoothstep(110, 10, toEnd) : 0;
       let width = 2.6 + 1.7 * Math.sqrt(a / 10000);
       if (width > 8.5) width = 8.5;
@@ -357,12 +453,14 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
     }
     // runs that end in a lake or another river finish exactly at its surface
     if (!run.toSea) s[n - 1] = floor;
+    // past the shoreline the river is the sea
+    else for (let k = shore; k < n; k++) s[k] = 0;
     for (let k = 0; k < n; k++) {
       const a = s[k > 1 ? k - 2 : 0], b = s[k < n - 2 ? k + 2 : n - 1];
       const g = (a - b) / 8;
       let v = 0.45 + g * 22;
       if (v > 2.6) v = 2.6;
-      sp[k] = v * (1 - 0.6 * (run.toSea ? smoothstep(60, 0, (n - 1 - k) * 2) : 0));
+      sp[k] = v * (1 - 0.6 * (run.toSea ? smoothstep(60, 0, (shore > k ? shore - k : 0) * 2) : 0));
     }
     return { pts, s, w, d, sp };
   };
@@ -457,7 +555,9 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
       nh = s - rdp[i] * (1 - q * q * 0.85);
       if (cur < nh) nh = cur;
     } else {
-      const target = s + 0.1 + (r - half) * 0.55;
+      // (banks of a sea-level mouth stay dry ground, not a 0 m wet-sand strip)
+      let target = s + 0.1 + (r - half) * 0.55;
+      if (target < SHORE_FLOOR) target = SHORE_FLOOR;
       const blend = smoothstep(half + bank * 0.55, half + bank, r);
       nh = cur > target ? target + (cur - target) * blend : cur;
       // levee to hold the water in where the ground is lower than the surface
@@ -479,11 +579,17 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
   for (const pr of profiles) {
     const pts: RiverPoint[] = [];
     const n = pr.pts.length;
-    for (let k = 0; k < n; k += 2) {
+    // A river that reaches the sea (or joins one in its estuary) is recorded
+    // up to where its surface meets sea level: past that its carved channel
+    // holds sea water (drawn and simulated as the sea), and a fresh-water
+    // ribbon lying on the sea only shows as a darker patch.
+    let nr = n;
+    for (let k = 1; k < n; k++) if (pr.s[k] <= 0.01) { nr = k + 1; break; }
+    for (let k = 0; k < nr; k += 2) {
       pts.push({ x: pr.pts[k].x, z: pr.pts[k].z, y: pr.s[k], width: pr.w[k], depth: pr.d[k] });
     }
-    if ((n - 1) % 2 !== 0) {
-      const k = n - 1;
+    if ((nr - 1) % 2 !== 0) {
+      const k = nr - 1;
       pts.push({ x: pr.pts[k].x, z: pr.pts[k].z, y: pr.s[k], width: pr.w[k], depth: pr.d[k] });
     }
     ctx.rivers.push({ points: pts } as River);
@@ -506,7 +612,9 @@ export function hydrologyStage(ctx: Ctx, rng: Rng): void {
         k = e + 1;
       } else k++;
     }
-    falls.sort((a, b) => b.top - b.bottom - (a.top - a.bottom));
+    // a river that leaves a cliff top always shows its fall into the sea
+    const atSea = (f: (typeof falls)[number]) => (f.bottom <= 0.05 ? 1 : 0);
+    falls.sort((a, b) => atSea(b) - atSea(a) || b.top - b.bottom - (a.top - a.bottom));
     const keep: typeof falls = [];
     for (const f of falls) {
       if (keep.length >= 2) break;

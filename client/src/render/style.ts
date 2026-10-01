@@ -1,6 +1,7 @@
 // Shared art direction. Every mesh in the game should get its material from
-// here so the whole island reads as one style: warm, saturated, soft-shaded,
-// low-detail — "Pixar's Luca, but cheap".
+// here so the whole island reads as one style. The world aims at stylized
+// realism (a lush volcanic Pacific island: photo-textured ground, natural
+// greens, Lambert-ish light); characters keep the softer Luca look.
 //
 // Owners may add helpers and palette entries; don't change existing signatures.
 import * as THREE from "three";
@@ -91,19 +92,22 @@ export const WORLD_PALETTE = {
 let worldRampTex: THREE.DataTexture | null = null;
 
 /**
- * Soft-terminator ramp for world materials (coord = N·L * 0.5 + 0.5). Faces
- * turned away from the sun get no direct light, so they match cast shadows;
- * the hemisphere ambient keeps them warm and readable.
+ * Light ramp for world materials (coord = N·L * 0.5 + 0.5): a slightly
+ * wrapped Lambert, so slopes shade gradually like real ground instead of the
+ * flat "lit or not" toon look. Faces turned away from the sun get no direct
+ * light, so they match cast shadows; the hemisphere ambient fills them.
  */
 export function worldRamp(): THREE.DataTexture {
   if (worldRampTex) return worldRampTex;
-  const n = 64;
+  const n = 128;
   const data = new Uint8Array(n * 4);
   for (let i = 0; i < n; i++) {
-    const x = i / (n - 1);
-    const t = Math.min(1, Math.max(0, (x - 0.44) / (0.74 - 0.44)));
-    const v = t * t * (3 - 2 * t);
-    const b = Math.round(v * 255);
+    const nl = (i / (n - 1)) * 2 - 1;
+    const x = Math.min(1, Math.max(0, (nl + 0.1) / 1.1));
+    // soft (C1) toe at the terminator
+    const a = 0.12;
+    const v = (x < a ? (x * x) / (2 * a) : x - a / 2) / (1 - a / 2);
+    const b = Math.round(Math.min(1, v) * 255);
     data.set([b, b, b, 255], i * 4);
   }
   worldRampTex = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat);

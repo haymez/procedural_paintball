@@ -16,18 +16,18 @@ export const CANOPY_RES = 512;
 /** crown radius, cover weight, crown mid / top height (all at scale 1), crown offset x/z from the trunk */
 type CanopyDef = [r: number, w: number, mid: number, top: number, ox?: number, oz?: number];
 const DEFS: Partial<Record<PropKind, CanopyDef>> = {
-  [PropKind.Palm]: [3.6, 0.3, 7.6, 9.6],
-  [PropKind.PalmLeaning]: [3.8, 0.28, 6.4, 8.2, 2.2, 0],
+  [PropKind.Palm]: [4.0, 0.3, 8.2, 10.2, 0.6, 0],
+  [PropKind.PalmLeaning]: [4.0, 0.28, 6.8, 8.6, 2.5, 0],
   [PropKind.Broadleaf]: [6.2, 0.85, 9.8, 12.8, 0.3, 0.1],
-  [PropKind.JungleGiant]: [10, 0.85, 17.8, 21.5, -0.6, 0.4],
-  [PropKind.UmbrellaPine]: [5, 0.75, 6.8, 8.4],
+  [PropKind.JungleGiant]: [10.8, 0.85, 17.6, 21.2, -0.6, 0.4],
+  [PropKind.UmbrellaPine]: [5.2, 0.75, 7.0, 8.4, 0.6, 0.2],
   [PropKind.Cypress]: [1.4, 0.35, 5, 10],
   [PropKind.Olive]: [2.4, 0.5, 2.8, 4.3],
   [PropKind.LemonTree]: [1.6, 0.45, 2.1, 3.3],
   [PropKind.Mangrove]: [2.9, 0.65, 4.4, 5.9],
   [PropKind.Banana]: [1.9, 0.3, 2.4, 3.8],
   [PropKind.TreeFern]: [2.4, 0.35, 3.7, 5],
-  [PropKind.HolmOak]: [4.3, 0.8, 5.6, 9],
+  [PropKind.HolmOak]: [4.3, 0.66, 5.6, 9],
   [PropKind.Pine]: [3.6, 0.5, 9.6, 14, 1.0, 0.3],
 };
 

@@ -42,16 +42,16 @@ export function computeEnv(timeOfDay: number): Env {
   const sunLight = lerpC(0xfff3df, 0xffc98a, golden).lerp(c(0xf2f4ff), morning * 0.35);
   const sunDisc = lerpC(0xfff6e6, 0xffd9a0, golden);
   const sunGlow = lerpC(0xffe9c4, 0xffb46b, golden).multiplyScalar(0.9);
-  const skyZenith = lerpC(0x2f86dd, 0x3a86cf, golden).lerp(c(0x2a7fe0), morning * 0.5);
-  const skyHorizon = lerpC(0xb3e1f6, 0xf3dcc0, golden * 0.8).lerp(c(0xc9ebfa), morning * 0.4);
-  const haze = lerpC(0xd4edf6, 0xf6d9b6, golden).lerp(c(0xdcefff), morning * 0.4);
-  const hemiSky = lerpC(0x9fd0f5, 0xa9c3e6, golden).lerp(c(0xa6d4ff), morning * 0.3);
-  const hemiGround = lerpC(0xc6a978, 0xd09a68, golden);
+  const skyZenith = lerpC(0x2b6ec6, 0x3a78c0, golden).lerp(c(0x2a70cc), morning * 0.5);
+  const skyHorizon = lerpC(0xb6d6ea, 0xeed8c0, golden * 0.8).lerp(c(0xc4def0), morning * 0.4);
+  const haze = lerpC(0xcfe2ec, 0xf0d8bc, golden).lerp(c(0xd8e8f4), morning * 0.4);
+  const hemiSky = lerpC(0x9cc4ea, 0xa9bfe0, golden).lerp(c(0xa2c8f0), morning * 0.3);
+  const hemiGround = lerpC(0x8f8462, 0x9a8060, golden);
 
   return {
     sunDir,
     sunLight,
-    sunIntensity: 2.9 - golden * 0.2,
+    sunIntensity: 3.3 - golden * 0.25,
     sunDisc,
     sunGlow,
     skyZenith,
@@ -59,8 +59,8 @@ export function computeEnv(timeOfDay: number): Env {
     haze,
     hemiSky,
     hemiGround,
-    hemiIntensity: 2.1,
-    fogDensity: 0.00055 + golden * 0.0001,
+    hemiIntensity: 1.55,
+    fogDensity: 0.00044 + golden * 0.0001,
     exposure: 1.0,
     warmth,
   };
@@ -152,6 +152,8 @@ export interface EnvUniforms {
   uCanopy: { value: THREE.Texture };
   /** x shade strength (0 = off), y sun-shadow distance (m), z/w unused. */
   uCanopyP: { value: THREE.Vector4 };
+  /** Cloud layer: x coverage 0..1, yz noise offset, w altitude (m). See CLOUD_FN. */
+  uCloud: { value: THREE.Vector4 };
   [k: string]: THREE.IUniform;
 }
 
@@ -172,6 +174,7 @@ export function makeEnvUniforms(env: Env, windDir: number, noise: THREE.Texture)
     uFocus: { value: new THREE.Vector4(0, 0, 0, 0) },
     uCanopy: { value: noCanopyTexture() },
     uCanopyP: { value: new THREE.Vector4(0, 120, 0, 0) },
+    uCloud: { value: new THREE.Vector4(0.45, 0, 0, 1600) },
   };
 }
 

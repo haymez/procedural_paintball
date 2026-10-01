@@ -1,7 +1,8 @@
 // Stage 7: dirt paths. A slope-aware A* on a 4 m grid links the sites (plus a
 // cave mouth and a beach or two) into a small network; paths are smoothed,
 // the ground is gently flattened across them, and footbridges are built where
-// they cross streams.
+// they cross streams. The village joins at its street ends, and a wider main
+// road always runs from the village to the boathouse.
 import { Noise } from "../../math/noise";
 import type { Rng } from "../../math/rng";
 import { atan2, cos, sin } from "../../math/trig";
@@ -10,7 +11,7 @@ import type { Ctx } from "../context";
 import { D8L, D8X, D8Z, gx, Heap, N, sample, toI } from "../grid";
 import { NO_WATER, StructureKind, type Path } from "../types";
 import { Builder, bridgeDeck } from "./build";
-import { addStructure, BLOCK_CAVE, BLOCK_PATH, BLOCK_STRUCT } from "./sites";
+import { addStructure, BLOCK_CAVE, BLOCK_FIELD, BLOCK_PATH, BLOCK_STRUCT } from "./sites";
 
 const W = 257; // A* grid (4 m)
 const CS = 4;
@@ -30,7 +31,7 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
       const j = iz * 2 * N + ix * 2;
       const k = iz * W + ix;
       hc[k] = h[j];
-      if (h[j] < 0.4 || ctx.holes[j] || (ctx.blocked[j] & (BLOCK_STRUCT | BLOCK_CAVE))) bad[k] = 1;
+      if (h[j] < 0.4 || ctx.holes[j] || (ctx.blocked[j] & (BLOCK_STRUCT | BLOCK_CAVE | BLOCK_FIELD))) bad[k] = 1;
       else if (ctx.water[j] !== NO_WATER) {
         const isLake = ctx.lakeCells.length > 0 && ctx.water[j] > h[j] + 1.6;
         bad[k] = isLake ? 1 : 2;
@@ -43,12 +44,17 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
   for (let iz = 0; iz < W; iz++)
     for (let ix = 0; ix < W; ix++) wig[iz * W + ix] = 1 + 0.6 * (0.5 + 0.5 * wn.fbm(ix / 9, iz / 9, 2));
 
-  // nodes
+  // nodes: site doors (the village has a gate at each street end and the lane)
   const nodes: Node[] = [];
-  for (const s of ctx.sites) nodes.push(clampFree(ctx, s.door.x, s.door.z));
+  const owner: number[] = []; // site index per node (-1: cave / beach)
+  ctx.sites.forEach((s, si) => {
+    const gates = s.spots.filter((p) => p.tag === "gate");
+    if (gates.length) for (const g of gates) { nodes.push(clampFree(ctx, g.x, g.z)); owner.push(si); }
+    else { nodes.push(clampFree(ctx, s.door.x, s.door.z)); owner.push(si); }
+  });
   for (const c of ctx.caves) {
     const e = c.entrances.find((q) => q.y > 1);
-    if (e) nodes.push(clampFree(ctx, e.x + e.dx * 7, e.z + e.dz * 7));
+    if (e) { nodes.push(clampFree(ctx, e.x + e.dx * 7, e.z + e.dz * 7)); owner.push(-1); }
   }
   // one or two beaches far from the other nodes
   for (let tries = 0; tries < 2; tries++) {
@@ -68,12 +74,14 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
           bz = z;
         }
       }
-    if (bestS > 140) nodes.push({ x: bx, z: bz });
+    if (bestS > 140) { nodes.push({ x: bx, z: bz }); owner.push(-1); }
   }
   if (nodes.length < 2) return;
 
-  // MST (Prim) + a couple of loop edges
+  // MST (Prim) + a couple of loop edges. Gates of the same site are already
+  // joined by its own streets: distance 0, no path built.
   const n = nodes.length;
+  const same = (a: number, b: number) => owner[a] >= 0 && owner[a] === owner[b];
   const inT = new Uint8Array(n);
   const edges: [number, number][] = [];
   inT[0] = 1;
@@ -83,7 +91,7 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
       if (!inT[a]) continue;
       for (let b = 0; b < n; b++) {
         if (inT[b]) continue;
-        const d = (nodes[a].x - nodes[b].x) * (nodes[a].x - nodes[b].x) + (nodes[a].z - nodes[b].z) * (nodes[a].z - nodes[b].z);
+        const d = same(a, b) ? -1 : (nodes[a].x - nodes[b].x) * (nodes[a].x - nodes[b].x) + (nodes[a].z - nodes[b].z) * (nodes[a].z - nodes[b].z);
         if (d < bd) {
           bd = d;
           ba = a;
@@ -92,18 +100,34 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
       }
     }
     inT[bb] = 1;
-    edges.push([ba, bb]);
+    if (!same(ba, bb)) edges.push([ba, bb]);
   }
   const extra: [number, number, number][] = [];
   for (let a = 0; a < n; a++)
     for (let b = a + 1; b < n; b++) {
-      if (edges.some(([p, q]) => (p === a && q === b) || (p === b && q === a))) continue;
+      if (same(a, b) || edges.some(([p, q]) => (p === a && q === b) || (p === b && q === a))) continue;
       const d = Math.sqrt((nodes[a].x - nodes[b].x) * (nodes[a].x - nodes[b].x) + (nodes[a].z - nodes[b].z) * (nodes[a].z - nodes[b].z));
       if (d < 420) extra.push([a, b, d]);
     }
   extra.sort((p, q) => p[2] - q[2]);
   const nExtra = Math.min(extra.length, rng.intRange(1, 2));
   for (let k = 0; k < nExtra; k++) edges.push([extra[k][0], extra[k][1]]);
+  // the village's main road runs to the boathouse
+  const vi = ctx.sites.findIndex((s) => s.kind === "village"), bi = ctx.sites.findIndex((s) => s.kind === "boathouse");
+  let mainRoad: [number, number] | null = null;
+  if (vi >= 0 && bi >= 0) {
+    const bn = owner.indexOf(bi);
+    let gn = -1, gd = 1e18;
+    owner.forEach((o, k) => {
+      if (o !== vi) return;
+      const d = (nodes[k].x - nodes[bn].x) * (nodes[k].x - nodes[bn].x) + (nodes[k].z - nodes[bn].z) * (nodes[k].z - nodes[bn].z);
+      if (d < gd) { gd = d; gn = k; }
+    });
+    if (gn >= 0 && bn >= 0) {
+      mainRoad = [gn, bn];
+      if (!edges.some(([p, q]) => (p === gn && q === bn) || (p === bn && q === gn))) edges.unshift([gn, bn]);
+    }
+  }
 
   // A*
   const g = new Float32Array(W * W);
@@ -179,7 +203,8 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
       }
       return s / c;
     });
-    const width = rng.range(2.4, 3.1);
+    const isMain = mainRoad !== null && ((a === mainRoad[0] && b === mainRoad[1]) || (a === mainRoad[1] && b === mainRoad[0]));
+    const width = isMain ? 4.2 : rng.range(2.4, 3.1);
     allPts.push({ pts: pts.map((p, k) => ({ x: p.x, z: p.z, y: ys[k] })), w: width });
   }
 
@@ -214,9 +239,15 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
     const d = rd[i];
     if (d > 4) continue;
     if (ctx.water[i] !== NO_WATER || ctx.holes[i] || (ctx.blocked[i] & BLOCK_STRUCT)) continue;
-    const w = 1 - smoothstep(1.4, 4, d);
-    h[i] = h[i] + (target[i] - h[i]) * w * 0.85;
     if (ctx.path[i] > 90) ctx.blocked[i] |= BLOCK_PATH;
+    // leave stream banks as hydrology carved them (the smoothed path profile dips
+    // into the channel at a crossing; the bridge spans it instead)
+    if (ctx.waterDist[i] < 4) continue;
+    const w = 1 - smoothstep(1.4, 4, d);
+    let nh = h[i] + (target[i] - h[i]) * w * 0.85;
+    // never dig dry ground down toward the water line (no wet pockets by the sea)
+    if (nh < h[i] && nh < 0.3) nh = h[i] < 0.3 ? h[i] : 0.3;
+    h[i] = nh;
   }
 
   // bridges where paths cross rivers
@@ -248,7 +279,8 @@ export function pathsStage(ctx: Ctx, rng: Rng): void {
     }
   }
 
-  ctx.paths = allPts.map((P): Path => ({ points: P.pts.map((p) => ({ x: p.x, z: p.z })), width: P.w }));
+  // (the village streets are already in ctx.paths)
+  ctx.paths.push(...allPts.map((P): Path => ({ points: P.pts.map((p) => ({ x: p.x, z: p.z })), width: P.w })));
 }
 
 function clampFree(ctx: Ctx, x: number, z: number): Node {

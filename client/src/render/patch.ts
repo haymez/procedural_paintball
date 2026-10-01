@@ -2,7 +2,7 @@
 // handles lights, cascaded sun shadows, instancing plumbing) with our own
 // lighting equation and injectable shader hooks.
 import * as THREE from "three";
-import { ENV_PARS, NOISE_FNS, STYLE_LIGHT_PARS, WIND_FN } from "./glsl";
+import { CLOUD_DENSITY_FN, ENV_PARS, NOISE_FNS, STYLE_LIGHT_PARS, WIND_FN } from "./glsl";
 import { worldRamp } from "./style";
 import { WORLD_HALF, WORLD_SIZE } from "../../../shared/world/types";
 
@@ -34,7 +34,7 @@ if (uCanopyP.x > 0.0) {
     reflectedLight.directDiffuse *= 1.0 - sunCut;
     reflectedLight.directSpecular *= 1.0 - sunCut;
     float amb = clamp((cov * 0.45 + reg * 0.55) * uCanopyP.x, 0.0, 1.0);
-    reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.6, 0.7, 0.6), amb);
+    reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.72, 0.8, 0.7), amb);
     reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.02, 0.05, 0.025) * amb;
   }
 }
@@ -129,22 +129,22 @@ export function applyPatch(m: THREE.Material, env: Record<string, THREE.IUniform
     let fs = shader.fragmentShader;
     vs = vs.replace(
       "#include <common>",
-      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${WIND_FN}\nvarying vec3 vWPos;\n${hooks.vertexPars ?? ""}`,
+      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${WIND_FN}\n${CLOUD_DENSITY_FN}\nvarying vec3 vWPos;\nvarying float vCloudSh;\n${hooks.vertexPars ?? ""}`,
     );
     vs = vs.replace("#include <beginnormal_vertex>", `#include <beginnormal_vertex>\n${hooks.vertexNormal ?? ""}`);
     vs = vs.replace("#include <begin_vertex>", `#include <begin_vertex>\n${hooks.vertexTransform ?? ""}`);
     // beginnormal runs before begin_vertex in three's shaders; make objectNormal mutable after transform
-    vs = vs.replace(/}\s*$/, `  #ifdef USE_INSTANCING\n  vWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;\n  #else\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  #endif\n${hooks.vertexEnd ?? ""}\n}`);
+    vs = vs.replace(/}\s*$/, `  #ifdef USE_INSTANCING\n  vWPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;\n  #else\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  #endif\n${hooks.vertexEnd ?? ""}\n  vCloudSh = cloudShadow(vWPos); // clouds are 100 m+ features: per-vertex is plenty\n}`);
     fs = fs.replace(
       "#include <common>",
-      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\nvarying vec3 vWPos;\n${canopy ? CANOPY_PARS : ""}\n${hooks.fragPars ?? ""}`,
+      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\nvarying vec3 vWPos;\nvarying float vCloudSh;\n${canopy ? CANOPY_PARS : ""}\n${hooks.fragPars ?? ""}`,
     );
     fs = fs.replace("#include <lights_toon_pars_fragment>", STYLE_LIGHT_PARS);
     fs = fs.replace("#include <color_fragment>", `#include <color_fragment>\n${hooks.fragColor ?? ""}`);
     fs = fs.replace("#include <normal_fragment_begin>", `#include <normal_fragment_begin>\n${hooks.fragNormal ?? ""}`);
     fs = fs.replace(
       "vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;",
-      `${canopy ? CANOPY_LIGHT : ""}\n${hooks.fragLight ?? ""}\nvec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + totalEmissiveRadiance;\n${hooks.fragOutput ?? ""}`,
+      `{ float cs = vCloudSh; reflectedLight.directDiffuse *= cs; reflectedLight.directSpecular *= cs; }\n${canopy ? CANOPY_LIGHT : ""}\n${hooks.fragLight ?? ""}\nvec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + totalEmissiveRadiance;\n${hooks.fragOutput ?? ""}`,
     );
     shader.vertexShader = vs;
     shader.fragmentShader = fs;

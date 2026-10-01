@@ -5,11 +5,11 @@
 // skipDecor (which skips zero-radius kinds) cannot change them.
 import { Noise } from "../../math/noise";
 import type { Rng } from "../../math/rng";
-import { atan2, TAU } from "../../math/trig";
+import { atan2, cos, sin, TAU } from "../../math/trig";
 import { smoothstep } from "../../math/vec";
 import type { Ctx } from "../context";
 import { edt, gx, N, NN, sample, toG } from "../grid";
-import { Biome, NO_WATER, PROP_COLLIDER_RADIUS, PropKind, type PropSet } from "../types";
+import { Biome, NO_WATER, PROP_COLLIDER_HEIGHT, PROP_COLLIDER_RADIUS, PropKind, WORLD_HALF, WORLD_SIZE, type PropSet, type Solid } from "../types";
 import { BLOCK_CAVE, BLOCK_DOCK, BLOCK_PATH, BLOCK_STRUCT } from "./sites";
 
 interface Env {
@@ -27,6 +27,7 @@ interface Env {
   cl: number; // generic cluster noise 0..1 (per kind)
   open: number; // clearing factor 0..1 (0 = clearing)
   st: number; // forest stand noise 0..1 shared by all kinds: < 0.5 oak-dominated, > 0.5 pine-dominated
+  pac: boolean; // Pacific (lush / tropical) island
 }
 
 interface Rule {
@@ -39,6 +40,8 @@ interface Rule {
   wet?: boolean; // may stand in shallow water
   sink?: number;
   lean?: boolean;
+  /** lean seaward only within this coast distance (m); default: always */
+  leanCoast?: number;
 }
 
 const B = Biome;
@@ -66,22 +69,23 @@ const RULES: Rule[] = [
     p: (e) => (e.b === B.Meadow ? 0.3 : e.b === B.Scrub ? 0.14 : e.b === B.PalmGrove && e.c > 60 ? 0.06 : e.b === B.Forest ? 0.2 * (1 - e.open) + 0.04 : 0) * e.open * smoothstep(0.35, 0.7, e.cl) * 1.5 },
   { kind: PropKind.Mangrove, sp: 4.5, minDist: 3.2, wet: true, scale: [0.8, 1.25], sink: 0.1,
     p: (e) => (e.b === B.Mangrove ? 0.55 : 0) },
-  { kind: PropKind.Palm, sp: 6.5, minDist: 3.2, scale: [0.85, 1.25],
+  { kind: PropKind.Palm, sp: 6.5, minDist: 3.2, scale: [0.85, 1.25], lean: true, leanCoast: 60,
     p: (e) => (e.b === B.PalmGrove ? 0.5 * (0.5 + e.cl) * (0.4 + 0.6 * e.open) : e.b === B.Beach && e.c > 6 ? 0.12 : e.b === B.Jungle && e.h < 25 ? 0.08 : e.b === B.Mangrove ? 0.04 : 0) },
   { kind: PropKind.PalmLeaning, sp: 8, minDist: 3.2, lean: true, scale: [0.85, 1.2],
     p: (e) => (e.b === B.Beach && e.c > 3 && e.c < 20 ? 0.2 : e.b === B.PalmGrove && e.c < 40 ? 0.08 : 0) },
   { kind: PropKind.Cypress, sp: 6, minDist: 3, scale: [0.8, 1.25],
     p: (e) => {
-      if (e.b !== B.Meadow && e.b !== B.Scrub && e.b !== B.Village && e.b !== B.PalmGrove) return 0;
-      if (e.path > 2.6 && e.path < 6.5 && e.site < 140) return 0.4; // cypress-lined lanes near ruins
+      if (e.pac || (e.b !== B.Meadow && e.b !== B.Scrub && e.b !== B.Village && e.b !== B.PalmGrove)) return 0;
+      if (e.path > 2.6 && e.path < 6.5 && e.site < 140) return 0.4; // cypress-lined lanes near ruins (not on Pacific islands)
       return e.b === B.Meadow ? 0.02 : 0;
     } },
   { kind: PropKind.Olive, sp: 6, minDist: 4, scale: [0.8, 1.2],
     p: (e) => (e.b === B.Meadow ? 0.5 * smoothstep(0.45, 0.8, e.cl) + 0.03 : e.b === B.Scrub ? 0.1 * e.cl : 0) * e.open },
   { kind: PropKind.LemonTree, sp: 5, minDist: 3, scale: [0.8, 1.15],
-    p: (e) => (e.site > 3 && e.site < 40 && e.b !== B.Beach && e.b !== B.Rock ? 0.22 * (1 - e.site / 40) + 0.04 : 0) },
+    p: (e) => (!e.pac && e.site > 3 && e.site < 40 && e.b !== B.Beach && e.b !== B.Rock ? 0.22 * (1 - e.site / 40) + 0.04 : 0) },
+  // bananas in the jungle, and in Pacific yards and village gardens
   { kind: PropKind.Banana, sp: 4, minDist: 2, scale: [0.8, 1.2],
-    p: (e) => (e.b === B.Jungle ? (0.08 + 0.2 * (1 - e.open)) * (0.3 + e.cl) : e.b === B.PalmGrove && e.m > 0.55 ? 0.05 : 0) },
+    p: (e) => (e.b === B.Jungle ? (0.08 + 0.2 * (1 - e.open)) * (0.3 + e.cl) : e.pac && e.site > 3 && e.site < 30 && e.b !== B.Beach && e.b !== B.Rock ? 0.12 * (1 - e.site / 30) + 0.02 : e.b === B.PalmGrove && e.m > 0.55 ? 0.05 : 0) },
   { kind: PropKind.TreeFern, sp: 4.2, minDist: 2.4, scale: [0.75, 1.3],
     p: (e) => (e.b === B.Jungle ? 0.26 * (0.6 + 0.6 * e.cl) : e.b === B.Riverbank && e.m > 0.55 ? 0.12 : e.b === B.Forest && e.wd < 20 ? 0.06 : 0) },
   { kind: PropKind.RockMedium, sp: 8, minDist: 3, maxSlope: 1.3, scale: [0.7, 1.4], sink: 0.35,
@@ -93,10 +97,14 @@ const RULES: Rule[] = [
     p: (e) => (e.b === B.Jungle ? 0.32 * (0.5 + e.cl) : e.b === B.Riverbank && e.m > 0.55 ? 0.08 : e.b === B.PalmGrove && e.m > 0.62 ? 0.03 : 0) },
   { kind: PropKind.Log, sp: 13, maxSlope: 0.5, scale: [0.8, 1.25], sink: 0.08,
     p: (e) => (e.b === B.Jungle ? 0.2 : e.b === B.Forest ? 0.16 : e.b === B.Riverbank ? 0.05 : 0) },
+  // shrubs; on beaches a naupaka / sea-grape fringe along the back of the sand
   { kind: PropKind.Bush, sp: 3.5, scale: [0.6, 1.4],
-    p: (e) => (e.b === B.Scrub ? 0.35 * (0.4 + e.cl) : e.b === B.Meadow ? 0.08 : e.b === B.Jungle ? 0.12 : e.b === B.Forest ? 0.2 + 0.2 * (1 - e.open) : e.b === B.PalmGrove ? 0.1 : e.b === B.Beach && e.c > 14 ? 0.03 : 0) },
+    p: (e) => (e.pac && e.site > 1.5 && e.site < 9 && e.b !== B.Beach ? 0.12 : e.b === B.Scrub ? 0.35 * (0.4 + e.cl) : e.b === B.Meadow ? 0.08 : e.b === B.Jungle ? 0.12 : e.b === B.Forest ? 0.2 + 0.2 * (1 - e.open) : e.b === B.PalmGrove ? 0.12 : e.b === B.Beach && e.c > 9 ? 0.05 + 0.25 * smoothstep(0.45, 0.8, e.cl) : 0) },
+  // ti / ginger clumps: wet forest edges, stream banks, and planted around Pacific houses
+  { kind: PropKind.TiPlant, sp: 4, scale: [0.75, 1.3],
+    p: (e) => (!e.pac ? 0 : e.b === B.Jungle ? 0.07 * (0.3 + e.cl) * (1.3 - e.open * 0.6) : e.b === B.Riverbank ? 0.1 : e.site > 1.5 && e.site < 10 && e.b !== B.Beach ? 0.14 : e.b === B.PalmGrove && e.m > 0.55 ? 0.04 : 0) },
   { kind: PropKind.Bougainvillea, sp: 3, scale: [0.7, 1.3],
-    p: (e) => (e.site > 1.2 && e.site < 8 ? 0.16 * (1 - e.site / 10) : e.b === B.Village ? 0.03 : 0) },
+    p: (e) => (e.site > 1.2 && e.site < 8 ? (e.pac ? 0.07 : 0.16) * (1 - e.site / 10) : e.b === B.Village ? 0.03 : 0) },
   { kind: PropKind.Agave, sp: 4, maxSlope: 1.2, scale: [0.6, 1.3],
     p: (e) => (e.b === B.Scrub ? 0.18 : e.b === B.Rock && e.h < 90 ? 0.05 : e.b === B.Cliff ? 0.05 : e.b === B.Beach && e.c > 12 ? 0.03 : 0) },
   { kind: PropKind.GrassTuft, sp: 2.2, scale: [0.6, 1.4],
@@ -125,6 +133,7 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
   const clearN = new Noise(rng.fork("clearings"));
   const standN = new Noise(rng.fork("stands"));
   const trunk = new Uint8Array(NN); // collider occupancy
+  const clear = structureClearance(ctx.structures.flatMap((st) => st.solids));
   // land bbox
   let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
   for (let iz = 0; iz < N; iz++)
@@ -137,7 +146,7 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
         if (z > z1) z1 = z;
       }
     }
-  const e: Env = { i: 0, x: 0, z: 0, h: 0, b: 0, m: 0, c: 0, s: 0, site: 0, path: 0, wd: 0, cl: 0, open: 1, st: 0.5 };
+  const e: Env = { i: 0, x: 0, z: 0, h: 0, b: 0, m: 0, c: 0, s: 0, site: 0, path: 0, wd: 0, cl: 0, open: 1, st: 0.5, pac: ctx.ch.climate === "lush" || ctx.ch.climate === "tropical" };
   const out: PropSet[] = [];
 
   for (let r = 0; r < RULES.length; r++) {
@@ -206,13 +215,19 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
             const j = Math.round(toG(pz)) * N + Math.round(toG(px));
             if (ctx.blocked[j] & (BLOCK_STRUCT | BLOCK_CAVE | BLOCK_DOCK)) bad = true;
           }
-          if (bad) continue;
+          // exact footprint test too (the blocked raster is 2 m and can miss thin walls / fences)
+          if (bad || !clear(x, hv - (rule.sink ?? 0.12) * scale, z, PROP_COLLIDER_RADIUS[rule.kind] * scale + 0.15, PROP_COLLIDER_HEIGHT[rule.kind] * scale)) continue;
           trunk[i] = 1;
         }
-        if (rule.lean) {
+        if (rule.lean && rule.leanCoast === undefined) {
           // lean out toward the sea
           const gxv = ctx.coast[i + 1] - ctx.coast[i - 1], gzv = ctx.coast[i + N] - ctx.coast[i - N];
           if (gxv !== 0 || gzv !== 0) rot = atan2(-gxv, -gzv) + pr.range(-0.5, 0.5);
+        } else if (rule.lean && e.c < rule.leanCoast!) {
+          // seaward too, but jittered by the angle already drawn: no extra RNG draw, so the
+          // positions of this kind (colliders) stay exactly where they were
+          const gxv = ctx.coast[i + 1] - ctx.coast[i - 1], gzv = ctx.coast[i + N] - ctx.coast[i - N];
+          if (gxv !== 0 || gzv !== 0) rot = atan2(-gxv, -gzv) + (rot / TAU - 0.5) * 1.1;
         }
         data.push(x, hv - (rule.sink ?? 0.12) * scale, z, rot, scale);
       }
@@ -220,4 +235,39 @@ export function propsStage(ctx: Ctx, rng: Rng): void {
   }
   out.sort((a, b) => a.kind - b.kind);
   ctx.props = out;
+}
+
+/**
+ * Exact horizontal clearance from structure solids (same local frame as
+ * collide.ts solidSdf): true when a collider capsule of radius r from y to
+ * y + h keeps at least r away from every solid footprint it overlaps in height.
+ */
+function structureClearance(solids: Solid[]): (x: number, y: number, z: number, r: number, h: number) => boolean {
+  const B = 16, NB = Math.ceil(WORLD_SIZE / B);
+  const buckets: number[][] = Array.from({ length: NB * NB }, () => []);
+  const rot = solids.map((s) => [cos(s.rotY), sin(s.rotY)]);
+  solids.forEach((s, k) => {
+    const R = (s.shape === "cylinder" ? s.hx : Math.sqrt(s.hx * s.hx + s.hz * s.hz)) + 4;
+    const i0 = Math.max(0, Math.floor((s.cx - R + WORLD_HALF) / B)), i1 = Math.min(NB - 1, Math.floor((s.cx + R + WORLD_HALF) / B));
+    const j0 = Math.max(0, Math.floor((s.cz - R + WORLD_HALF) / B)), j1 = Math.min(NB - 1, Math.floor((s.cz + R + WORLD_HALF) / B));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) buckets[j * NB + i].push(k);
+  });
+  return (x, y, z, r, h) => {
+    const bi = Math.floor((x + WORLD_HALF) / B), bj = Math.floor((z + WORLD_HALF) / B);
+    if (bi < 0 || bj < 0 || bi >= NB || bj >= NB) return true;
+    for (const k of buckets[bj * NB + bi]) {
+      const s = solids[k];
+      if (s.cy + s.hy < y - 0.3 || s.cy - s.hy > y + h) continue;
+      const dx = x - s.cx, dz = z - s.cz, c = rot[k][0], sn = rot[k][1];
+      const lx = dx * c - dz * sn, lz = dx * sn + dz * c;
+      let d: number;
+      if (s.shape === "cylinder") d = Math.sqrt(lx * lx + lz * lz) - s.hx;
+      else {
+        const qx = Math.max((lx < 0 ? -lx : lx) - s.hx, 0), qz = Math.max((lz < 0 ? -lz : lz) - s.hz, 0);
+        d = Math.sqrt(qx * qx + qz * qz);
+      }
+      if (d < r) return false;
+    }
+    return true;
+  };
 }

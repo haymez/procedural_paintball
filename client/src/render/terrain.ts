@@ -1,13 +1,15 @@
 // Chunked heightfield terrain with distance LOD (skirts hide cracks), frustum
-// culling (three.js per-chunk bounds), holes for cave mouths, and a
-// stylized splat shader: biome base + slope rock + dirt paths + paving +
-// wet sand + seabed caustics + procedural detail + world paint layer.
+// culling (three.js per-chunk bounds), holes for cave mouths, and a splat
+// shader over CC0 photo textures (ground.ts): biome-tinted grass, forest
+// floors, sand, rock (biplanar on faces), dirt paths, village ground, blended
+// by height, plus wet sand, seabed caustics and the world paint layer.
 import * as THREE from "three";
 import { CELL, GRID_RES, WORLD_HALF, type World } from "../../../shared/world/types";
 import { makeStyledMaterial } from "./patch";
 import { GRID_UV_GLSL, type WorldTextures } from "./worldTextures";
 import { PAINT_SAMPLE_GLSL } from "./paint";
-import { WORLD_PALETTE, PALETTE } from "./style";
+import { WORLD_PALETTE } from "./style";
+import { GROUND_GLSL, LAYER, loadGroundLayers, type GroundLayers } from "./ground";
 
 const CHUNK = 64; // cells per chunk side (128 m)
 const NCH = (GRID_RES - 1) / CHUNK; // 8
@@ -20,6 +22,8 @@ export interface TerrainOptions {
 export interface Terrain {
   group: THREE.Group;
   material: THREE.MeshToonMaterial;
+  /** Ground texture layers (rock / soil arrays, climate knobs) for materials that should match the terrain. */
+  ground: GroundLayers["uniforms"];
   update(camera: THREE.Camera): void;
   dispose(): void;
 }
@@ -29,25 +33,28 @@ const glslColor = (hex: number) => {
   return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
 };
 
-export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THREE.IUniform>) {
+export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THREE.IUniform>, ground: GroundLayers) {
   return {
-    key: "terrain-v2",
+    key: "terrain-v3",
     uniforms: {
       tGround: { value: tex.ground },
       tFloor: { value: tex.floor },
       tMask: { value: tex.mask },
       tNrm: { value: tex.normal },
+      ...ground.uniforms,
       ...paint,
     },
     fragPars: /* glsl */ `
       uniform sampler2D tGround, tMask, tNrm, tFloor;
       ${PAINT_SAMPLE_GLSL}
       ${GRID_UV_GLSL}
+      ${GROUND_GLSL}
       vec3 gN;
       float causticsAt(vec2 p, float t) {
-        float a = noiseT(p * 0.16 + vec2(t * 0.02, t * 0.011)).g;
-        float b = noiseT(p * 0.21 + vec2(-t * 0.014, t * 0.018) + 0.37).g;
-        return pow(smoothstep(0.3, 0.0, min(a, b)), 1.5);
+        vec2 w = (noiseT(p * 0.031 + vec2(t * 0.006, 0.0)).ra - 0.5) * 1.6; // warp so the net isn't regular
+        float a = noiseT((p + w) * 0.16 + vec2(t * 0.02, t * 0.011)).g;
+        float b = noiseT((p - w) * 0.21 + vec2(-t * 0.014, t * 0.018) + 0.37).g;
+        return pow(smoothstep(0.22, 0.0, min(a, b)), 2.0) * smoothstep(0.3, 0.65, noiseT(p * 0.05 + t * 0.004).r);
       }
     `,
     fragColor: /* glsl */ `
@@ -57,157 +64,198 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
       vec4 NR = texture2D(tNrm, guv);
       vec3 n = vec3(NR.r * 2.0 - 1.0, 0.0, NR.g * 2.0 - 1.0);
       n.y = sqrt(max(1.0 - dot(n.xz, n.xz), 0.0));
-      float slope = 1.0 - n.y;
+      // geometry steeper than the 2 m grid says (cave-mouth patches, overhang walls): trust the facet
+      float facetSlope;
+      {
+        vec3 fn = normalize(cross(dFdx(vWPos), dFdy(vWPos)));
+        if (dot(fn, cameraPosition - vWPos) < 0.0) fn = -fn;
+        facetSlope = 1.0 - abs(fn.y);
+        if (fn.y < n.y - 0.35) n = fn;
+      }
+      // materials follow the real facet where it is cliff-steep (the 2 m grid normal smooths the
+      // foot of a cliff into a gentle slope, which would put sand arches up the rock)
+      float slope = max(1.0 - n.y, facetSlope * smoothstep(0.35, 0.7, facetSlope));
       vec2 p = vWPos.xz;
       float y = vWPos.y;
       float dist = length(vWPos - cameraPosition);
-      float fine = 1.0 - smoothstep(25.0, 80.0, dist);
       float mid = 1.0 - smoothstep(120.0, 400.0, dist);
       vec4 nA = noiseT(p * 0.0045);
       vec4 nB = noiseT(p * 0.021);
       vec4 nC = noiseT(p * 0.09);
       vec4 nD = noiseT(p * 0.37);
-      vec4 nE = noiseT(p * 1.7);
-
-      vec3 base = G.rgb;
       float ao = G.a;
-      // large patchy variation, sun-bleached areas
-      base *= 0.88 + 0.24 * nB.r;
-      base = mix(base, base * vec3(1.1, 1.03, 0.82), smoothstep(0.55, 0.85, nA.a) * 0.5);
+      float tileK = smoothstep(0.35, 0.65, nB.r * 0.7 + nA.g * 0.3); // anti-tiling blend
+      gNearN = dist < 170.0 && y > -5.0 ? 1.0 : 0.0; // far or deep under water: no detail normals
+      // uv gradients for the texture fetches (taken here, in uniform control flow)
+      vec2 pdx = dFdx(p), pdy = dFdy(p);
+      vec2 zdx = dFdx(vec2(vWPos.z, y)), zdy = dFdy(vec2(vWPos.z, y));
+      vec2 xdx = dFdx(vec2(vWPos.x, y)), xdy = dFdy(vec2(vWPos.x, y));
+      vec3 base = G.rgb * (0.9 + 0.2 * nB.r);                        // biome color, macro variation
+      // tangent-space detail normal (xy) accumulated over layers; h = current surface height
+      vec2 dn; float h;
+      vec2 tn; float th;
 
-      // forest floors (jungle leaf litter / Mediterranean needle duff) replace the grass look
+      // coverage of the layers that sit on top of the grass (decided first so hidden grass isn't sampled)
+      float sandW = smoothstep(0.25, 0.75, M.g + (nD.r - 0.5) * 0.45) * (1.0 - smoothstep(0.22, 0.42, slope));
+      // --- rock: outcrops (rock biome) and steep ground. Lush islands keep green on slopes
+      // until it gets really steep, with rock showing in vertical runnels. ---
+      vec2 fd = normalize(n.xz + vec2(1e-4));
+      float along = dot(p, vec2(fd.y, -fd.x));                 // horizontal coordinate across a face
+      float runnel = noiseT(vec2(along * 0.09, y * 0.006)).r * 0.65 + noiseT(vec2(along * 0.31, y * 0.02)).b * 0.35;
+      float vegK = uClimate.x;
+      float slopeRock = smoothstep(mix(0.3, 0.46, vegK), mix(0.46, 0.66, vegK), slope + (runnel - 0.5) * mix(0.1, 0.36, vegK));
+      float biomeRock = smoothstep(0.35, 0.75, M.r + (nC.r - 0.5) * 0.4) * (1.0 - vegK * 0.55 * smoothstep(0.8, 0.95, n.y) * smoothstep(0.4, 0.7, nC.g + nB.a * 0.4));
+      float rockW = max(biomeRock, slopeRock);
+      float steep = smoothstep(0.25, 0.6, slope);
+      rockW *= 1.0 - smoothstep(-0.5, -3.0, y) * 0.6 * (1.0 - steep);
+      // --- grass: photo detail on the biome color ---
+      vec3 gc = uLayerMean[${LAYER.grass}];
+      dn = vec2(0.0); h = 0.5;
+      if (max(sandW, rockW) < 0.985) {
+        gc = groundC(${LAYER.grass}.0, p / 2.6, pdx / 2.6, pdy / 2.6, tileK, dn, h).rgb;
+        // steep vegetated slopes: project from the side (dominant axis) so the texture doesn't smear into stripes
+        float steepG = smoothstep(0.22, 0.5, slope);
+        if (steepG > 0.01) {
+          vec2 t1; float h1;
+          bool xa = abs(n.x) > abs(n.z);
+          vec3 g1 = xa ? groundC(${LAYER.grass}.0, vec2(vWPos.z, y) / 2.6, zdx / 2.6, zdy / 2.6, tileK, t1, h1).rgb
+                       : groundC(${LAYER.grass}.0, vec2(vWPos.x, y) / 2.6, xdx / 2.6, xdy / 2.6, tileK, t1, h1).rgb;
+          gc = mix(gc, g1, steepG);
+          h = mix(h, h1, steepG);
+          dn *= 1.0 - steepG;
+        }
+      }
+      vec3 col = base * detailOf(gc, ${LAYER.grass}.0);
+      // sun-bleached and damp patches
+      col = mix(col, col * vec3(1.08, 1.04, 0.84), smoothstep(0.58, 0.85, nA.a) * 0.45 * (0.4 + uClimate.w));
+      col = mix(col, col * vec3(0.82, 0.92, 0.86), smoothstep(0.55, 0.8, nC.r) * 0.35);
+      float bump = 0.55;
+
+      // --- forest floors: rainforest leaf litter / Mediterranean needle duff ---
       vec2 FL = texture2D(tFloor, guv).rg;
       float floorF = max(FL.r, FL.g);
-      float grassF = 1.0 - floorF;
-
-      // --- grass / vegetated ground ---
-      vec3 col = base;
-      float clump = mix(0.5, nE.b, fine);
-      col *= mix(1.0, 0.8 + 0.4 * nD.r, mid) * (0.9 + 0.2 * clump);
-      // painterly patches: sunny yellow-green vs cool deep green
-      float patchG = smoothstep(0.3, 0.7, nC.r * 0.7 + nD.g * 0.3);
-      col = mix(col * vec3(0.86, 0.96, 0.9), col * vec3(1.1, 1.06, 0.84), patchG);
-      // blade streaks + tiny meadow flowers close to the camera
-      if (fine > 0.0) {
-        float blades = noiseT(p * vec2(3.1, 0.9) + nD.r).b;
-        col *= 1.0 + (blades - 0.5) * 0.22 * fine * grassF;
-        vec2 fc = floor(p * 2.3);
-        float fh = hash12(fc);
-        vec2 fo = fract(p * 2.3) - 0.5 - (hash22(fc) - 0.5) * 0.6;
-        float dotF = smoothstep(0.13, 0.07, length(fo)) * step(0.965, fh) * smoothstep(0.55, 0.75, nB.a) * fine;
-        vec3 fcol = mix(vec3(1.0, 0.95, 0.85), vec3(1.0, 0.8, 0.2), step(0.985, fh));
-        col = mix(col, fcol, dotF * (1.0 - M.g) * grassF);
-      }
-      // darker, cooler grass in shady hollows
-      col = mix(col, col * vec3(0.8, 0.95, 0.9), (1.0 - ao) * 0.8);
-
       if (floorF > 0.004) {
-        // leaf shapes: jittered cells warped by noise, dark gaps between them
-        vec2 q = p + (nD.rg - 0.5) * 0.9;
-        vec2 lc = floor(q * 3.6);
-        float h1 = hash12(lc), h2 = hash12(lc + 7.31), h3 = hash12(lc + 3.17);
-        vec2 lf = fract(q * 3.6) - 0.5 - (vec2(h2, h3) - 0.5) * 0.3;
-        float ang = h1 * 6.2832;
-        lf = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * lf;
-        float leaf = smoothstep(0.42, 0.3, length(lf * vec2(1.0, 1.9)));
-        float leafFar = 0.45;
-        float leafK = mix(leafFar, leaf, fine);
-        float mossP = smoothstep(0.45, 0.7, nC.r * 0.7 + nD.a * 0.3);
-        // jungle: dark rich floor, brown / olive / rust leaves, mossy patches
-        vec3 jl = mix(${glslColor(0x6b4d2c)}, ${glslColor(0x4e5c26)}, h2);
-        jl = mix(jl, ${glslColor(0x8a4f22)}, step(0.86, h3));
-        vec3 jc = col * 0.86;
-        jc = mix(jc, jl, leafK * 0.55 * (1.0 - mossP * 0.6));
-        jc = mix(jc, ${glslColor(0x3f6a2c)}, mossP * 0.45);
-        jc *= 0.92 + 0.16 * nE.b * fine;
-        // Mediterranean forest: warm needle hatching, oak-leaf litter, sparse dry-grass patches
-        vec2 rp2 = mat2(0.8, -0.6, 0.6, 0.8) * p;
-        float needles = noiseT(rp2 * vec2(2.6, 0.35)).b * 0.5 + noiseT(p * vec2(0.4, 2.9) + 0.3).b * 0.5;
-        vec3 fc = col * (0.9 + (needles - 0.5) * 0.5 * mix(0.3, 1.0, fine));
-        vec3 fl2 = mix(${glslColor(0x7a5634)}, ${glslColor(0xa07c4a)}, h2);
-        fc = mix(fc, fl2, leafK * 0.4 * step(0.35, h3));
-        float dry = smoothstep(0.58, 0.72, nC.r * 0.6 + nB.a * 0.4);
-        float dblades = noiseT(p * vec2(3.1, 0.9) + nD.r).b;
-        fc = mix(fc, ${glslColor(0xae9c56)} * (0.85 + 0.3 * dblades * fine), dry * 0.6);
-        vec3 fcol = mix(jc, fc, FL.g / max(FL.r + FL.g, 1e-3));
-        col = mix(col, fcol, floorF);
+        float jl = FL.r / max(FL.r + FL.g, 1e-3);
+        vec4 jc = vec4(0.0), fc = vec4(0.0);
+        if (jl > 0.005) jc = groundC(${LAYER.jungle}.0, p / 2.2, pdx / 2.2, pdy / 2.2, tileK, tn, th);
+        if (jl < 0.995) fc = groundC(${LAYER.forest}.0, p / 2.2, pdx / 2.2, pdy / 2.2, tileK, tn, th);
+        vec3 jcol = mix(jc.rgb, base * detailOf(jc.rgb, ${LAYER.jungle}.0), 0.4) * 0.85;
+        vec3 fcol = mix(fc.rgb, base * detailOf(fc.rgb, ${LAYER.forest}.0), 0.3);
+        // mossy damp patches on the rainforest floor
+        jcol = mix(jcol, base * 0.7 * detailOf(gc, ${LAYER.grass}.0), smoothstep(0.5, 0.75, nC.r * 0.7 + nD.a * 0.3) * 0.55);
+        vec3 flc = mix(fcol, jcol, jl);
+        float fh = mix(fc.a, jc.a, jl);
+        float t = hblend(floorF, fh, h);
+        col = mix(col, flc, t);
+        h = mix(h, fh, t);
       }
 
-      // --- sand: ripples + speckle ---
-      float sandW = smoothstep(0.25, 0.75, M.g + (nD.r - 0.5) * 0.45);
-      float rip = sin(dot(p, vec2(0.83, 0.55)) * 3.1 + nC.r * 9.0) * 0.5 + 0.5;
-      vec3 sandC = ${glslColor(PALETTE.sand)} * (0.93 + 0.08 * nC.a) * (1.0 - 0.06 * rip * fine) * (0.97 + 0.06 * nE.b);
-      sandC = mix(sandC, ${glslColor(WORLD_PALETTE.seabed)}, smoothstep(0.5, -2.0, y));
-      col = mix(col, sandC, sandW);
+      // --- sand: fine grains, golden on volcanic islands, paler on limestone ones ---
+      if (sandW > 0.002) {
+        vec4 sc = groundC(${LAYER.sand}.0, p / 3.2, pdx / 3.2, pdy / 3.2, tileK, tn, th);
+        vec3 sd = pow(detailOf(sc.rgb, ${LAYER.sand}.0), vec3(0.55));
+        vec3 sandC = uGroundT[3] * sd * (0.95 + 0.1 * nC.a);
+        sandC = mix(sandC, ${glslColor(WORLD_PALETTE.seabed)} * sd * 0.82, smoothstep(0.5, -2.5, y));
+        float t = hblend(sandW, sc.a * 0.6, h);
+        col = mix(col, sandC, t);
+        dn = mix(dn, tn * 0.6, t);
+        h = mix(h, sc.a * 0.6, t);
+      }
 
-      // --- rock / cliffs: warm limestone with strata ---
-      float rockW = max(smoothstep(0.35, 0.75, M.r + (nC.r - 0.5) * 0.4), smoothstep(0.34, 0.5, slope + (nC.r - 0.5) * 0.16));
-      rockW *= 1.0 - smoothstep(-0.5, -3.0, y) * 0.6;
-      float steep = smoothstep(0.25, 0.6, slope);
-      vec2 rp = mix(p, vec2((p.x + p.y) * 0.707, y * 1.3), steep); // cliff faces: sample the vertical plane
-      vec4 rD = noiseT(rp * 0.37);
-      float strata = noiseT(vec2((p.x + p.y) * 0.02, y * 0.12)).r;
-      float bands = sin(y * 0.85 + nC.a * 4.0 + strata * 3.0) * 0.5 + 0.5;
-      vec3 rockC = mix(${glslColor(WORLD_PALETTE.limestone)}, ${glslColor(WORLD_PALETTE.limestoneWarm)}, smoothstep(0.3, 0.8, bands * 0.6 + strata * 0.5));
-      rockC *= 0.9 + 0.16 * rD.a;
-      rockC *= 1.0 - 0.16 * smoothstep(0.88, 1.0, bands) * mid * steep; // ledge lines on faces
-      // moss / grass creeping on flatter rock tops
-      float moss = smoothstep(0.75, 0.9, n.y + (nD.r - 0.5) * 0.3) * (1.0 - M.g);
-      rockC = mix(rockC, base * 0.9, moss * 0.8);
-      col = mix(col, rockC, rockW);
+      if (rockW > 0.002) {
+        // top-down sample for outcrops; biplanar (two vertical planes) for faces
+        vec3 rcol = vec3(0.0); vec2 rn = vec2(0.0); float rh = 0.5;
+        if (steep < 0.99) {
+          vec4 rt = groundC(${LAYER.rockTop}.0, p / 5.5, pdx / 5.5, pdy / 5.5, tileK, tn, th);
+          rcol = uGroundT[0] * pow(detailOf(rt.rgb, ${LAYER.rockTop}.0), vec3(uClimate.y)); rn = tn; rh = rt.a;
+        }
+        if (steep > 0.01) {
+          vec2 wx = vec2(abs(n.x), abs(n.z));
+          wx = pow(wx, vec2(4.0)); wx /= (wx.x + wx.y + 1e-4);
+          vec2 tnx = vec2(0.0), tnz = vec2(0.0); float thx, thz;
+          float faceK = smoothstep(0.3, 0.7, nB.g * 0.6 + nA.r * 0.4); // anti-tiling on big faces
+          vec4 fx = vec4(0.0), fz = vec4(0.0);
+          if (wx.x > 0.01) fx = groundC(${LAYER.rockFace}.0, vec2(vWPos.z, y * 1.15) / 9.0, zdx / 9.0, zdy / 9.0, faceK, tnx, thx);
+          if (wx.y > 0.01) fz = groundC(${LAYER.rockFace}.0, vec2(vWPos.x, y * 1.15) / 9.0, xdx / 9.0, xdy / 9.0, faceK, tnz, thz);
+          vec3 fcol = uGroundT[1] * pow(detailOf(fx.rgb * wx.x + fz.rgb * wx.y, ${LAYER.rockFace}.0), vec3(uClimate.y));
+          vec2 fn = vec2(tnx.x * sign(n.x), tnx.y) * wx.x + vec2(tnz.x * sign(n.z), tnz.y) * wx.y; // (across, up)
+          float fh = fx.a * wx.x + fz.a * wx.y;
+          rcol = mix(rcol, fcol, steep);
+          rn = mix(rn, fn, steep);
+          rh = mix(rh, fh, steep);
+        }
+        rcol *= 0.88 + 0.24 * nC.a;
+        // weathering: warm rust streaks on basalt, darker water stains down faces
+        rcol = mix(rcol, rcol * vec3(1.25, 1.0, 0.82), smoothstep(0.55, 0.8, runnel) * 0.35 * uClimate.z);
+        rcol *= 1.0 - mix(0.1, 0.25, uClimate.z) * smoothstep(0.6, 0.85, noiseT(vec2(along * 0.18, y * 0.004)).g) * steep;
+        // big-scale tone variation so long faces don't read as one repeated swatch
+        rcol *= 0.82 + 0.36 * noiseT(vec2(along * 0.011, y * 0.02) + 0.37).a;
+        // moss / ferns creeping over rock where it isn't too steep (strongest on lush islands)
+        float moss = smoothstep(0.55, 0.85, n.y + (nD.r - 0.5) * 0.35 + (runnel - 0.5) * 0.25 * vegK) * (0.35 + 0.65 * vegK);
+        vec3 mossC = base * detailOf(gc, ${LAYER.grass}.0) * 0.8;
+        rcol = mix(rcol, mossC, moss * (1.0 - M.g) * 0.85);
+        float t = hblend(rockW, rh + 0.25, h);
+        col = mix(col, rcol, t);
+        dn = mix(dn, rn, t);
+        h = mix(h, rh, t);
+        bump = mix(bump, 1.1 - steep * 0.3, t);
+      }
 
-      // --- dirt paths ---
-      float pathW = smoothstep(0.28, 0.6, M.b + (nD.g - 0.5) * 0.35 + (nE.r - 0.5) * 0.15 * fine);
-      vec3 dirt = ${glslColor(PALETTE.dirt)} * (0.88 + 0.2 * nC.r);
-      float peb = smoothstep(0.1, 0.0, noiseT(p * 0.8).g);
-      dirt = mix(dirt, dirt * 1.18, peb * fine);
-      dirt = mix(dirt, dirt * 0.85, smoothstep(0.75, 1.0, M.b) * 0.5);
-      col = mix(col, dirt, pathW * (1.0 - rockW * 0.7));
+      // --- dirt paths: red laterite on volcanic islands, pale gravel elsewhere ---
+      float pathW = smoothstep(0.28, 0.6, M.b + (nD.g - 0.5) * 0.35);
+      if (pathW > 0.002) {
+        vec4 dc = groundC(${LAYER.dirt}.0, p / 2.4, pdx / 2.4, pdy / 2.4, tileK, tn, th);
+        vec3 dcol = uGroundT[2] * detailOf(dc.rgb, ${LAYER.dirt}.0) * (0.9 + 0.15 * nC.r);
+        dcol = mix(dcol, dcol * 0.8, smoothstep(0.75, 1.0, M.b) * 0.4); // compacted center
+        float t = hblend(pathW * (1.0 - rockW * 0.7), dc.a, h);
+        col = mix(col, dcol, t);
+        dn = mix(dn, tn, t);
+        h = mix(h, dc.a, t);
+      }
 
-      // --- village paving: warm cobbles ---
-      float paveW = smoothstep(0.35, 0.7, M.a + (nD.r - 0.5) * 0.3);
-      vec2 cp = p * 1.4;
-      float cob = noiseT(cp * 0.0625).g; // cell edges
-      vec3 cobC = mix(vec3(0.62, 0.52, 0.41), vec3(0.8, 0.7, 0.56), noiseT(cp * 0.07 + 3.1).b);
-      cobC *= mix(0.6, 1.0, smoothstep(0.02, 0.14, cob));
-      cobC = mix(cobC, col, smoothstep(0.55, 0.8, nC.g) * 0.5); // grass between the stones
-      col = mix(col, cobC, paveW * (1.0 - pathW * 0.5));
+      // --- village yards, green and ballfield: trampled lawn with bare dirt patches (streets are paths) ---
+      float paveW = smoothstep(0.35, 0.7, M.a + (nD.r - 0.5) * 0.3) * (1.0 - pathW);
+      if (paveW > 0.002) {
+        col = mix(col, col * vec3(1.04, 0.98, 0.82), paveW * 0.6); // drier, walked-on grass
+        float bare = smoothstep(0.42, 0.68, nC.g * 0.55 + nD.b * 0.3 + nB.a * 0.25);
+        if (bare > 0.002) {
+          vec4 pc = groundC(${LAYER.pave}.0, p / 2.8, pdx / 2.8, pdy / 2.8, tileK, tn, th);
+          float t = hblend(paveW * bare, pc.a, h);
+          col = mix(col, pc.rgb * 0.95, t);
+          dn = mix(dn, tn, t);
+          h = mix(h, pc.a, t);
+        }
+      }
 
       // --- wet sand at the waterline ---
       float wave = 0.18 * sin(uTime * 0.9 + dot(p, vec2(0.05, 0.03)));
       float wet = (1.0 - smoothstep(0.0, 0.9, y - wave)) * step(-0.05, y - wave * 0.5);
-      col *= 1.0 - wet * 0.3 * (0.4 + sandW);
+      col *= 1.0 - wet * 0.38 * (0.4 + sandW);
       gSpec = wet * 0.35 * sandW;
-      gShine = 30.0;
+      gShine = 40.0;
 
       // --- underwater: caustics and blue absorption on the seabed ---
       if (y < 0.0) {
         float depth = -y;
-        col = mix(col, col * vec3(0.62, 0.9, 0.92), smoothstep(0.0, 6.0, depth));
-        float ca = causticsAt(p, uTime);
-        col += vec3(0.55, 0.75, 0.7) * ca * 0.3 * smoothstep(0.0, 0.6, depth) * exp(-depth * 0.12) * mid;
+        col = mix(col, col * vec3(0.55, 0.85, 0.88), smoothstep(0.0, 6.0, depth));
+        float ca = depth < 9.0 && mid > 0.01 ? causticsAt(p, uTime) : 0.0;
+        col += vec3(0.55, 0.75, 0.7) * ca * 0.14 * smoothstep(0.0, 0.8, depth) * exp(-depth * 0.12) * mid;
       }
 
-      // undergrowth masses: darker, cooler shrub thickets and bush speckle on vegetated ground
+      // distant vegetated ground: shrub masses so forests and slopes don't read as flat felt
       {
         float veg = (1.0 - sandW) * (1.0 - rockW) * (1.0 - pathW) * (1.0 - paveW) * step(0.3, y);
         float shrubN = noiseT(p * 0.045 + 3.7).r * 0.6 + noiseT(p * 0.17 + 1.3).a * 0.4;
-        float shrub = smoothstep(0.5, 0.64, shrubN) * veg;
-        col = mix(col, col * vec3(0.6, 0.78, 0.58), shrub * 0.7);
-        col = mix(col, col * vec3(1.12, 1.08, 0.86), smoothstep(0.46, 0.5, shrubN) * (1.0 - smoothstep(0.5, 0.54, shrubN)) * veg * 0.5);
-        vec2 sc = floor(p * 0.55);
-        vec2 so = fract(p * 0.55) - 0.5 - (hash22(sc) - 0.5) * 0.5;
-        float speck = smoothstep(0.32, 0.18, length(so)) * step(0.8 - shrub * 0.3, hash12(sc + 17.0));
-        float farK = smoothstep(25.0, 90.0, dist) * (1.0 - smoothstep(500.0, 900.0, dist));
-        col = mix(col, col * vec3(0.55, 0.72, 0.52), speck * veg * farK * 0.8);
+        float farK = smoothstep(30.0, 120.0, dist);
+        col = mix(col, col * vec3(0.66, 0.78, 0.62), smoothstep(0.5, 0.66, shrubN) * veg * 0.6 * farK);
       }
-      // calm the lime: slightly desaturate vegetated ground
+      // natural, slightly muted greens
       {
-        float vg = (1.0 - sandW) * (1.0 - rockW);
+        float vg = (1.0 - sandW) * (1.0 - rockW * 0.5);
         float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-        col = mix(col, vec3(lum), 0.14 * vg);
+        col = mix(col, vec3(lum), 0.16 * vg);
       }
-      col *= mix(0.5, 1.0, ao);
+      col *= mix(0.45, 1.0, ao);
 
       // --- world paint layer ---
       {
@@ -220,16 +268,20 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
           col = mix(col, pc * (1.0 - rim * 0.25), edge);
           gSpec = mix(gSpec, 0.9, edge);
           gShine = mix(gShine, 70.0, edge);
+          dn *= 1.0 - edge * 0.7;
         }
       }
 
       diffuseColor.rgb = col;
 
-      // detail normal: bumpy rock, gentle ground undulation
-      float bumpS = (rockW * (1.4 - steep * 0.9) + 0.3) * mid;
-      float b0 = nD.a, bx = noiseT((p + vec2(0.35, 0.0)) * 0.37).a, bz = noiseT((p + vec2(0.0, 0.35)) * 0.37).a;
-      n.xz -= vec2(bx - b0, bz - b0) * bumpS;
-      gN = normalize(n);
+      // detail normal: photo normals on top of the terrain normal (planar: tangent x = +X, y = +Z;
+      // faces: x across the face, y = up), faded with distance
+      float nk = bump * (1.0 - smoothstep(50.0, 165.0, dist));
+      vec3 pn = n + vec3(dn.x, 0.0, dn.y) * nk * (1.0 - steep);
+      // on faces, "up" in the texture tilts the normal up/down the slope
+      vec3 acrossV = normalize(vec3(fd.y, 0.0, -fd.x));
+      pn += (acrossV * dn.x + vec3(0.0, 1.0, 0.0) * dn.y) * nk * steep * 0.8;
+      gN = normalize(pn);
     `,
     fragNormal: /* glsl */ `
       normal = normalize((viewMatrix * vec4(gN, 0.0)).xyz);
@@ -240,7 +292,8 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
 export function createTerrain(world: World, tex: WorldTextures, env: Record<string, THREE.IUniform>, paint: Record<string, THREE.IUniform>, opts: TerrainOptions): Terrain {
   const group = new THREE.Group();
   group.name = "terrain";
-  const material = makeStyledMaterial(env, terrainShaderHooks(tex, paint), {});
+  const ground = loadGroundLayers(world);
+  const material = makeStyledMaterial(env, terrainShaderHooks(tex, paint, ground), {});
 
   const h = world.height;
   const nrm = tex.normals;
@@ -269,6 +322,11 @@ export function createTerrain(world: World, tex: WorldTextures, env: Record<stri
     for (let z = m - 1; z >= 1; z--) ring.push(z * vs); // x = 0
     for (let i = 0; i < ring.length; i++) {
       const top0 = ring[i], top1 = ring[(i + 1) % ring.length];
+      // no skirt along the edge of a hole (cave mouths): it would hang across the opening
+      if (holeTest) {
+        const cx = Math.min(m - 1, Math.min(top0 % vs, top1 % vs)), cz = Math.min(m - 1, Math.min(Math.floor(top0 / vs), Math.floor(top1 / vs)));
+        if (holeTest(cx, cz)) continue;
+      }
       const bot0 = base + i, bot1 = base + ((i + 1) % ring.length);
       idx.push(top0, bot0, top1, top1, bot0, bot1);
     }
@@ -397,10 +455,12 @@ export function createTerrain(world: World, tex: WorldTextures, env: Record<stri
   return {
     group,
     material,
+    ground: ground.uniforms,
     update,
     dispose() {
       for (const ch of chunks) for (const g of ch.lods) g?.dispose();
       material.dispose();
+      ground.dispose();
     },
   };
 }

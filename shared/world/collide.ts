@@ -1,6 +1,6 @@
 // Collision and spatial queries against a generated World. Shared by the
 // client-side prediction, the authoritative server and the renderer (caves).
-// Deterministic: only + - * / and Math.sqrt/floor/abs/min/max.
+// Deterministic: only + - * / and Math.sqrt/floor/abs/min/max/sign.
 //
 // Rotation convention for Solid.rotY (three.js Object3D.rotation.y):
 //   world = center + (lx*cos r + lz*sin r, ly, -lx*sin r + lz*cos r)
@@ -11,7 +11,7 @@ import { cos, sin } from "../math/trig";
 import { INV_CELL, N, sample } from "./grid";
 import {
   NO_WATER, PROP_COLLIDER_HEIGHT, PROP_COLLIDER_RADIUS, PROP_STRIDE, SEA_LEVEL, WORLD_HALF, WORLD_SIZE,
-  type World,
+  type CaveRock, type World,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -72,118 +72,270 @@ function faceDist(x: number, z: number): number {
 // Caves
 
 interface CavePrep {
-  /** Per edge: ax ay az bx by bz ra rb fa fb (fa/fb = floor heights at the ends). */
+  /** Per edge: ax ay az bx by bz ra rb fa fb (fa/fb = floor heights at the ends). Layout read by shared/bots/nav.ts. */
   e: Float64Array;
   ne: number;
-  /** Per chamber node: x y z r floor */
+  /** Per edge: 1 = hall (squashed capsule between two chambers), 0 = tunnel. */
+  ek: Uint8Array;
+  /** Per chamber node: x y z r floor. Layout read by shared/bots/nav.ts. */
   c: Float64Array;
   nc: number;
-  grid: Csr; // indices: edges [0, ne), chambers [ne, ne + nc)
+  /** Per shaft (skylight): x z y0 y1 r */
+  s: Float64Array;
+  ns: number;
+  /** Per rock: ax ay az bx by bz ra rb, then round-cone constants l2 rr a2 il2, then shell (1/0). */
+  k: Float64Array;
+  nk: number;
+  /** Wall wobble amplitude per void primitive (by grid id), from the cave's style. */
+  amp: Float64Array;
+  /** grid ids: edges [0, ne), chambers [ne, ne + nc), shafts [.., + ns), rocks [.., + nk) */
+  grid: Csr;
   noise: Noise;
 }
 const EF = 10;
 const CF = 5;
+const SHF = 5;
+const KF = 13;
 /** Tunnel floor sits this fraction of the radius below the axis. */
 export const CAVE_FLOOR = 0.55;
 export const CHAMBER_R = 7;
+/** Chambers are spheres squashed vertically by this factor (floor at y - 0.45 r, ceiling at y + r / 1.25). */
+export const CHAMBER_SQUASH = 1.25;
+/** Wall wobble amplitude (m) by cave style. */
+const WOBBLE_KARST = 0.38, WOBBLE_LAVA = 0.2;
+/** Smooth-union width (m) where big rock features meet the cave walls and floor. */
+const ROCK_BLEND = 1.1;
+/** Gentle floor undulation amplitude (m). */
+const FLOOR_UND = 0.28;
 
 const cavePreps = new WeakMap<World, CavePrep>();
 
 function prepCaves(world: World): CavePrep {
   let p = cavePreps.get(world);
   if (p) return p;
-  let ne = 0, nc = 0;
+  let ne = 0, nc = 0, ns = 0, nk = 0;
   for (const c of world.caves) {
     ne += c.edges.length;
     for (const n of c.nodes) if (n.r >= CHAMBER_R) nc++;
+    ns += c.shafts ? c.shafts.length : 0;
+    nk += c.rocks ? c.rocks.length : 0;
   }
   const e = new Float64Array(ne * EF);
+  const ek = new Uint8Array(ne);
   const ch = new Float64Array(nc * CF);
+  const sh = new Float64Array(ns * SHF);
+  const rk = new Float64Array(nk * KF);
+  const amp = new Float64Array(ne + nc + ns + nk);
   let k = 0, m = 0;
+  // edges then chambers per cave (nav.ts relies on this order)
   for (const c of world.caves) {
+    const a0 = c.style === "lava" ? WOBBLE_LAVA : WOBBLE_KARST;
     for (const [ia, ib] of c.edges) {
       const a = c.nodes[ia], b = c.nodes[ib];
       const o = k * EF;
-      // Tunnels entering a chamber taper to 4.5 m and meet its floor level.
-      const ra = a.r >= CHAMBER_R ? 4.5 : a.r;
-      const rb = b.r >= CHAMBER_R ? 4.5 : b.r;
-      const ay = a.r >= CHAMBER_R ? a.y - 0.45 * a.r + CAVE_FLOOR * ra : a.y;
-      const by = b.r >= CHAMBER_R ? b.y - 0.45 * b.r + CAVE_FLOOR * rb : b.y;
-      e[o] = a.x; e[o + 1] = ay; e[o + 2] = a.z;
-      e[o + 3] = b.x; e[o + 4] = by; e[o + 5] = b.z;
-      e[o + 6] = ra; e[o + 7] = rb;
-      e[o + 8] = ay - CAVE_FLOOR * ra; e[o + 9] = by - CAVE_FLOOR * rb;
+      if (a.r >= CHAMBER_R && b.r >= CHAMBER_R) {
+        // hall: squashed capsule between two chambers, floors at the chambers' floors
+        ek[k] = 1;
+        e[o] = a.x; e[o + 1] = a.y; e[o + 2] = a.z;
+        e[o + 3] = b.x; e[o + 4] = b.y; e[o + 5] = b.z;
+        e[o + 6] = a.r; e[o + 7] = b.r;
+        e[o + 8] = a.y - 0.45 * a.r; e[o + 9] = b.y - 0.45 * b.r;
+      } else {
+        // Tunnels entering a chamber taper to 4.5 m and meet its floor level.
+        const ra = a.r >= CHAMBER_R ? 4.5 : a.r;
+        const rb = b.r >= CHAMBER_R ? 4.5 : b.r;
+        const ay = a.r >= CHAMBER_R ? a.y - 0.45 * a.r + CAVE_FLOOR * ra : a.y;
+        const by = b.r >= CHAMBER_R ? b.y - 0.45 * b.r + CAVE_FLOOR * rb : b.y;
+        e[o] = a.x; e[o + 1] = ay; e[o + 2] = a.z;
+        e[o + 3] = b.x; e[o + 4] = by; e[o + 5] = b.z;
+        e[o + 6] = ra; e[o + 7] = rb;
+        e[o + 8] = ay - CAVE_FLOOR * ra; e[o + 9] = by - CAVE_FLOOR * rb;
+      }
+      amp[k] = a0;
       k++;
     }
     for (const n of c.nodes) {
       if (n.r < CHAMBER_R) continue;
       const o = m * CF;
       ch[o] = n.x; ch[o + 1] = n.y; ch[o + 2] = n.z; ch[o + 3] = n.r; ch[o + 4] = n.y - 0.45 * n.r;
+      amp[ne + m] = a0;
       m++;
     }
   }
-  const grid = buildCsr(ne + nc, (i, out) => {
+  let q = 0, r = 0;
+  for (const c of world.caves) {
+    const a0 = c.style === "lava" ? WOBBLE_LAVA : WOBBLE_KARST;
+    for (const s of c.shafts ?? []) {
+      const o = q * SHF;
+      sh[o] = s.x; sh[o + 1] = s.z; sh[o + 2] = s.y0; sh[o + 3] = s.y1; sh[o + 4] = s.r;
+      amp[ne + nc + q] = a0;
+      q++;
+    }
+    for (const s of c.rocks ?? []) {
+      const o = r * KF;
+      rk[o] = s.ax; rk[o + 1] = s.ay; rk[o + 2] = s.az; rk[o + 3] = s.bx; rk[o + 4] = s.by; rk[o + 5] = s.bz;
+      rk[o + 6] = s.ra; rk[o + 7] = s.rb;
+      const bx = s.bx - s.ax, by = s.by - s.ay, bz = s.bz - s.az;
+      const l2 = bx * bx + by * by + bz * bz, rr = s.ra - s.rb;
+      rk[o + 8] = l2; rk[o + 9] = rr; rk[o + 10] = l2 - rr * rr; rk[o + 11] = l2 > 1e-9 ? 1 / l2 : 0;
+      rk[o + 12] = s.shell ? 1 : 0;
+      r++;
+    }
+  }
+  const grid = buildCsr(ne + nc + ns + nk, (i, out) => {
     if (i < ne) {
-      const o = i * EF, r = Math.max(e[o + 6], e[o + 7]) + 1;
-      out[0] = Math.min(e[o], e[o + 3]) - r; out[1] = Math.min(e[o + 2], e[o + 5]) - r;
-      out[2] = Math.max(e[o], e[o + 3]) + r; out[3] = Math.max(e[o + 2], e[o + 5]) + r;
+      const o = i * EF, rr = Math.max(e[o + 6], e[o + 7]) + 1;
+      out[0] = Math.min(e[o], e[o + 3]) - rr; out[1] = Math.min(e[o + 2], e[o + 5]) - rr;
+      out[2] = Math.max(e[o], e[o + 3]) + rr; out[3] = Math.max(e[o + 2], e[o + 5]) + rr;
+    } else if (i < ne + nc) {
+      const o = (i - ne) * CF, rr = ch[o + 3] + 1;
+      out[0] = ch[o] - rr; out[1] = ch[o + 2] - rr; out[2] = ch[o] + rr; out[3] = ch[o + 2] + rr;
+    } else if (i < ne + nc + ns) {
+      const o = (i - ne - nc) * SHF, rr = sh[o + 4] + 1;
+      out[0] = sh[o] - rr; out[1] = sh[o + 1] - rr; out[2] = sh[o] + rr; out[3] = sh[o + 1] + rr;
     } else {
-      const o = (i - ne) * CF, r = ch[o + 3] + 1;
-      out[0] = ch[o] - r; out[1] = ch[o + 2] - r; out[2] = ch[o] + r; out[3] = ch[o + 2] + r;
+      const o = (i - ne - nc - ns) * KF, rr = Math.max(rk[o + 6], rk[o + 7]) + ROCK_BLEND;
+      out[0] = Math.min(rk[o], rk[o + 3]) - rr; out[1] = Math.min(rk[o + 2], rk[o + 5]) - rr;
+      out[2] = Math.max(rk[o], rk[o + 3]) + rr; out[3] = Math.max(rk[o + 2], rk[o + 5]) + rr;
     }
   }, 3);
-  p = { e, ne, c: ch, nc, grid, noise: new Noise(new Rng(world.seed).fork("caveWalls")) };
+  p = { e, ne, ek, c: ch, nc, s: sh, ns, k: rk, nk, amp, grid, noise: new Noise(new Rng(world.seed).fork("caveWalls")) };
   cavePreps.set(world, p);
   return p;
 }
 
-/** Cave-void SDF from explicit candidate list; exact near walls, bounded far. */
-function caveEval(p: CavePrep, x: number, y: number, z: number, cell: number): number {
+/** Exact SDF of rock `o` (offset into p.k): a round cone (iq), or a sphere when degenerate. */
+function rockSd(k: Float64Array, o: number, x: number, y: number, z: number): number {
+  const ax = k[o], ay = k[o + 1], az = k[o + 2];
+  const px = x - ax, py = y - ay, pz = z - az;
+  const l2 = k[o + 8], a2 = k[o + 10];
+  const bx = k[o + 3] - ax, by = k[o + 4] - ay, bz = k[o + 5] - az;
+  if (l2 < 1e-6 || a2 < 1e-6) {
+    // one end sphere swallows the other: just the bigger sphere
+    if (k[o + 6] >= k[o + 7]) return Math.sqrt(px * px + py * py + pz * pz) - k[o + 6];
+    const qx = px - bx, qy = py - by, qz = pz - bz;
+    return Math.sqrt(qx * qx + qy * qy + qz * qz) - k[o + 7];
+  }
+  const rr = k[o + 9], il2 = k[o + 11];
+  const yy = px * bx + py * by + pz * bz;
+  const zz = yy - l2;
+  const wx = px * l2 - bx * yy, wy = py * l2 - by * yy, wz = pz * l2 - bz * yy;
+  const x2 = wx * wx + wy * wy + wz * wz;
+  const y2 = yy * yy * l2;
+  const z2 = zz * zz * l2;
+  const kk = Math.sign(rr) * rr * rr * x2;
+  if (Math.sign(zz) * a2 * z2 > kk) return Math.sqrt(x2 + z2) * il2 - k[o + 7];
+  if (Math.sign(yy) * a2 * y2 < kk) return Math.sqrt(x2 + y2) * il2 - k[o + 6];
+  return (Math.sqrt(x2 * a2 * il2) + yy * rr) * il2 - k[o + 6];
+}
+
+const rockTmp = new Float64Array(KF);
+/** Exact SDF of a single cave rock (negative inside it), without wall blending or wobble. */
+export function caveRockSdf(s: CaveRock, x: number, y: number, z: number): number {
+  const k = rockTmp;
+  k[0] = s.ax; k[1] = s.ay; k[2] = s.az; k[3] = s.bx; k[4] = s.by; k[5] = s.bz; k[6] = s.ra; k[7] = s.rb;
+  const bx = s.bx - s.ax, by = s.by - s.ay, bz = s.bz - s.az;
+  const l2 = bx * bx + by * by + bz * bz, rr = s.ra - s.rb;
+  k[8] = l2; k[9] = rr; k[10] = l2 - rr * rr; k[11] = l2 > 1e-9 ? 1 / l2 : 0;
+  return rockSd(k, 0, x, y, z);
+}
+
+/**
+ * Cave-void SDF from explicit candidate list; exact near walls, bounded far.
+ * withSmall = false leaves out the small free-standing rocks (the renderer
+ * meshes the walls without them and draws them as separate detail meshes).
+ */
+function caveEval(p: CavePrep, x: number, y: number, z: number, cell: number, withSmall = true): number {
   const g = p.grid;
   const s = g.start[cell], t = g.start[cell + 1];
   if (s === t) return 3 + faceDist(x, z);
-  let best = 1e9;
-  const e = p.e;
+  let best = 1e9, amp = WOBBLE_KARST;
+  let shell = 1e9, small = 1e9;
+  const e = p.e, ne = p.ne, nv = ne + p.nc, ns = nv + p.ns;
+  let und = 1e9;
   for (let k = s; k < t; k++) {
     const id = g.items[k];
     let d: number;
-    if (id < p.ne) {
+    if (id < ne) {
       const o = id * EF;
       const ax = e[o], ay = e[o + 1], az = e[o + 2];
-      const bx = e[o + 3] - ax, by = e[o + 4] - ay, bz = e[o + 5] - az;
-      const px = x - ax, py = y - ay, pz = z - az;
-      const l2 = bx * bx + by * by + bz * bz;
-      let u = l2 > 0 ? (px * bx + py * by + pz * bz) / l2 : 0;
-      u = u < 0 ? 0 : u > 1 ? 1 : u;
-      const qx = px - bx * u, qy = py - by * u, qz = pz - bz * u;
-      const r = e[o + 6] + (e[o + 7] - e[o + 6]) * u;
-      const dc = Math.sqrt(qx * qx + qy * qy + qz * qz) - r;
-      const fl = e[o + 8] + (e[o + 9] - e[o + 8]) * u;
-      d = dc > fl - y ? dc : fl - y;
-    } else {
-      const o = (id - p.ne) * CF;
+      const px = x - ax, pz = z - az;
+      const bx = e[o + 3] - ax, bz = e[o + 5] - az;
+      let dc: number, u: number;
+      if (p.ek[id] === 1) {
+        // hall: squashed capsule (same vertical squash as chambers)
+        const py = (y - ay) * CHAMBER_SQUASH, by = (e[o + 4] - ay) * CHAMBER_SQUASH;
+        const l2 = bx * bx + by * by + bz * bz;
+        u = l2 > 0 ? (px * bx + py * by + pz * bz) / l2 : 0;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const qx = px - bx * u, qy = py - by * u, qz = pz - bz * u;
+        dc = (Math.sqrt(qx * qx + qy * qy + qz * qz) - (e[o + 6] + (e[o + 7] - e[o + 6]) * u)) * 0.8;
+      } else {
+        const py = y - ay, by = e[o + 4] - ay;
+        const l2 = bx * bx + by * by + bz * bz;
+        u = l2 > 0 ? (px * bx + py * by + pz * bz) / l2 : 0;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const qx = px - bx * u, qy = py - by * u, qz = pz - bz * u;
+        dc = Math.sqrt(qx * qx + qy * qy + qz * qz) - (e[o + 6] + (e[o + 7] - e[o + 6]) * u);
+      }
+      if (und === 1e9) und = FLOOR_UND * p.noise.n2(x * 0.075, z * 0.075);
+      const fl = e[o + 8] + (e[o + 9] - e[o + 8]) * u + und - y;
+      d = dc > fl ? dc : fl;
+    } else if (id < nv) {
+      const o = (id - ne) * CF;
       const c = p.c;
-      const dx = x - c[o], dy = (y - c[o + 1]) * 1.25, dz = z - c[o + 2];
+      const dx = x - c[o], dy = (y - c[o + 1]) * CHAMBER_SQUASH, dz = z - c[o + 2];
       // squashed sphere (vertical radius r/1.25); scaled to stay conservative
       const dc = (Math.sqrt(dx * dx + dy * dy + dz * dz) - c[o + 3]) * 0.8;
-      const fl = c[o + 4];
-      d = dc > fl - y ? dc : fl - y;
+      if (und === 1e9) und = FLOOR_UND * p.noise.n2(x * 0.075, z * 0.075);
+      const fl = c[o + 4] + und - y;
+      d = dc > fl ? dc : fl;
+    } else if (id < ns) {
+      const o = (id - nv) * SHF, sh = p.s;
+      const dx = x - sh[o], dz = z - sh[o + 1];
+      const cy = y < sh[o + 2] ? sh[o + 2] : y > sh[o + 3] ? sh[o + 3] : y;
+      const dy = y - cy;
+      d = Math.sqrt(dx * dx + dy * dy + dz * dz) - sh[o + 4];
+    } else {
+      const o = (id - ns) * KF;
+      if (p.k[o + 12] === 1) {
+        const v = rockSd(p.k, o, x, y, z);
+        if (v < shell) shell = v;
+      } else if (withSmall) {
+        const v = rockSd(p.k, o, x, y, z);
+        if (v < small) small = v;
+      }
+      continue;
     }
-    if (d < best) best = d;
+    if (d < best) {
+      best = d;
+      amp = p.amp[id];
+    }
+  }
+  if (best === 1e9) return 3 + faceDist(x, z);
+  if (shell < 1e9) {
+    // big rock features: smooth subtraction so they flare into floor and ceiling
+    const b = -shell;
+    const dd = best - b;
+    const hh = ROCK_BLEND - (dd < 0 ? -dd : dd);
+    best = (best > b ? best : b) + (hh > 0 ? (hh * hh) / (4 * ROCK_BLEND) : 0);
   }
   if (best > -2.5 && best < 2.5) {
     // organic wobble on the walls, faded out smoothly so the field stays continuous
     const a = best < 0 ? -best : best;
-    const t = a < 1.5 ? 1 : 1 - (a - 1.5);
-    best += 0.35 * t * t * (3 - 2 * t) * p.noise.n3(x * 0.22, y * 0.22, z * 0.22);
+    const tt = a < 1.5 ? 1 : 1 - (a - 1.5);
+    best += amp * tt * tt * (3 - 2 * tt) * p.noise.n3(x * 0.22, y * 0.22, z * 0.22);
   }
+  if (small < 1e9 && -small > best) best = -small;
   const bound = 3 + faceDist(x, z);
   return best < bound ? best : bound;
 }
 
 /**
  * Signed distance to the cave void (negative inside a tunnel or chamber).
- * Tunnels are tapered capsules with flat floors; chambers are squashed spheres.
+ * Tunnels are tapered capsules with flat floors; chambers are squashed spheres;
+ * halls are squashed capsules between chambers; shafts are vertical capsules;
+ * rock features are subtracted from the void.
  * Exact within ~3 m of a cave, a positive lower bound further away.
  */
 export function caveSdf(world: World, x: number, y: number, z: number): number {
@@ -191,6 +343,21 @@ export function caveSdf(world: World, x: number, y: number, z: number): number {
   const cell = hashCell(x, z);
   if (cell < 0) return 10;
   return caveEval(p, x, y, z, cell);
+}
+
+/** caveSdf without the small free-standing rocks (the renderer draws those as separate meshes). */
+export function caveShellSdf(world: World, x: number, y: number, z: number): number {
+  const p = prepCaves(world);
+  const cell = hashCell(x, z);
+  if (cell < 0) return 10;
+  return caveEval(p, x, y, z, cell, false);
+}
+
+/** True if any cave primitive is listed near (x, z) (cheap pre-test for meshing). */
+export function caveNear(world: World, x: number, z: number): boolean {
+  const p = prepCaves(world);
+  const cell = hashCell(x, z);
+  return cell >= 0 && p.grid.start[cell] !== p.grid.start[cell + 1];
 }
 
 // ---------------------------------------------------------------------------
