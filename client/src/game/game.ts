@@ -828,26 +828,10 @@ export class Game {
     return this.source.snapshot().info.get(this.source.localId)?.color ?? 0xffffff;
   }
 
-  private dropMarks: NonNullable<HudFrame["drop"]>["marks"] = [];
-  /** Sky-drop HUD: altitude, predicted landing, every enemy marked on screen. */
+  /** Sky-drop HUD: altitude and predicted landing. */
   private dropHud(me: PlayerState): NonNullable<HudFrame["drop"]> {
-    const snap = this.source.snapshot();
-    const marks = this.dropMarks;
-    marks.length = 0;
-    const cam = this.rig.camera;
-    for (const o of snap.players) {
-      if (o.id === me.id || !o.alive) continue;
-      if (!this.actors.playerPos(o.id, _v2)) _v2.set(o.x, o.y, o.z);
-      const dist = Math.hypot(_v2.x - me.x, _v2.y - me.y, _v2.z - me.z);
-      if (dist < 45) continue; // close ones wear their own name tags
-      _v2.y += 2.2;
-      const ndc = _v2.project(cam);
-      const i = snap.info.get(o.id);
-      marks.push({ id: o.id, name: i?.name ?? "?", color: i?.color ?? 0xffffff, ndc: { x: ndc.x, y: ndc.y, z: ndc.z }, dist });
-    }
-    marks.sort((a, b) => a.dist - b.dist);
     const g = Math.max(0, terrainHeight(this.opts.world, me.x, me.z));
-    return { alt: me.y - g, landing: this.sky.landingValid ? { x: this.sky.landing.x, z: this.sky.landing.z } : null, marks };
+    return { alt: me.y - g, landing: this.sky.landingValid ? { x: this.sky.landing.x, z: this.sky.landing.z } : null };
   }
 
   // ------------------------------------------------------------------ debug API

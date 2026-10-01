@@ -39,8 +39,6 @@ export interface DropHud {
   alt: number;
   /** Predicted touch-down point, or null. */
   landing: { x: number; z: number } | null;
-  /** Enemies to mark on screen (projected: ndc x/y, z > 1 = behind). */
-  marks: { id: number; name: string; color: number; ndc: { x: number; y: number; z: number }; dist: number }[];
 }
 
 export interface HudCallbacks {
@@ -150,7 +148,6 @@ export class Hud {
   private dropEl: El;
   private dropAlt: El;
   private dropOn = false;
-  private foeMarks: El[] = [];
   private liveT = 0;
   private lastFrame: HudFrame | null = null;
   private lastAlive = true;
@@ -653,38 +650,10 @@ export class Hud {
       this.dropEl.classList.toggle("hidden", !on);
       this.liveT = 0;
     }
-    let n = 0;
     if (d) {
       const a = `${Math.max(0, Math.round(d.alt))} m`;
       if (this.dropAlt.textContent !== a) this.dropAlt.textContent = a;
-      // enemy markers (names over their heads, arrows at the screen edge; only the nearest few edge ones get a name)
-      let edgeNames = 0;
-      for (const m of d.marks) {
-        let e = this.foeMarks[n];
-        if (!e) { e = el("div", "ih-foe", `<i class="arrow"></i><b></b>`); this.root.appendChild(e); this.foeMarks.push(e); }
-        n++;
-        const b = e.querySelector("b")!;
-        const label = `${m.name} · ${Math.round(m.dist)} m`;
-        if (b.textContent !== label) b.textContent = label;
-        e.style.setProperty("--c", hex(m.color));
-        e.style.display = "";
-        const behind = m.ndc.z > 1;
-        let x = behind ? -m.ndc.x : m.ndc.x, y = behind ? -m.ndc.y : m.ndc.y;
-        // (the top strip belongs to the timer and compass)
-        const off = behind || Math.abs(x) > 0.94 || y > 0.7 || y < -0.9;
-        if (off) {
-          const k = Math.max(Math.abs(x) / 0.92, y > 0 ? y / 0.68 : -y / 0.84, 1e-3);
-          x /= k; y /= k;
-          if (behind && Math.abs(x) < 0.3 && Math.abs(y) < 0.3) y = -0.84;
-        }
-        e.classList.toggle("edge", off);
-        e.classList.toggle("quiet", off && edgeNames++ >= 3);
-        e.style.setProperty("--a", `${((Math.atan2(-y, x) * 180) / Math.PI - 90).toFixed(1)}deg`);
-        e.style.opacity = off ? "0.75" : String(Math.max(0.55, Math.min(1, 1.2 - m.dist / 400)));
-        e.style.transform = `translate(${((x * 0.5 + 0.5) * 100).toFixed(2)}vw, ${((-y * 0.5 + 0.5) * 100).toFixed(2)}vh)`;
-      }
     }
-    for (let i = n; i < this.foeMarks.length; i++) this.foeMarks[i].style.display = "none";
   }
   private mapT = 0;
 

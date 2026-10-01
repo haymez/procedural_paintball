@@ -123,7 +123,7 @@ export class CameraRig {
       back += (8.5 - back) * dk;
       up += (1.9 - up) * dk;
       shoulder *= 1 - dk;
-      if (c.move === Move.Glide) fovAdd += dk * Math.min(14, 4 + c.speed * 0.25);
+      if (c.move === Move.Glide) fovAdd += dk * Math.min(8, 3 + c.speed * 0.15);
     }
     back = back * (1 - ak) + (c.scope ? 2.0 : 2.7) * ak;
     shoulder = shoulder * (1 - ak) + 1.02 * ak;

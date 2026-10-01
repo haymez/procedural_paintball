@@ -326,17 +326,6 @@
 .ih-dropcard .keys { display: grid; grid-template-columns: repeat(4, auto auto); gap: 0.3em 0.45em; align-items: center; justify-content: center; margin-top: 0.35em; font-size: 0.82em; }
 .ih-dropcard .keys span { text-align: left; margin-right: 0.5em; }
 .ih-dropcard .hint { margin-top: 0.35em; font-size: 0.78em; color: var(--ink-soft); }
-.ih-foe { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
-.ih-foe b {
-  position: absolute; left: 0; bottom: 14px; transform: translateX(-50%); white-space: nowrap; font-size: 0.74em; padding: 0.02em 0.5em;
-  background: var(--c); border: 2.5px solid var(--ink); border-radius: 0.8em; box-shadow: 0 2px 0 var(--ink); color: var(--ink); font-weight: 800;
-}
-.ih-foe .arrow {
-  position: absolute; left: -7px; top: -12px; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent;
-  border-top: 10px solid var(--c); filter: drop-shadow(0 2px 0 var(--ink)) drop-shadow(0 -1px 0 var(--ink));
-}
-.ih-foe.edge b { bottom: auto; top: 14px; }
-.ih-foe.edge .arrow { transform: rotate(var(--a)); transform-origin: 50% 30%; top: -8px; }
 .ih-map .hot { width: 0; height: 0; z-index: 2; pointer-events: none; }
 .ih-map .hot i {
   position: absolute; left: 0; top: 0; width: calc(3.2em * var(--s, 1)); height: calc(3.2em * var(--s, 1)); transform: translate(-50%, -50%);
@@ -346,7 +335,6 @@
 @keyframes hot-pulse { from { transform: translate(-50%, -50%) scale(0.85); } to { transform: translate(-50%, -50%) scale(1.1); } }
 .ih-map .legend .lg-hot { border-radius: 50%; background: #f47b63; opacity: 0.7; }
 .ih-dropcard kbd { font-family: var(--display); font-weight: 800; background: var(--sun); border: 2.5px solid var(--ink); border-radius: 0.6em; padding: 0 0.5em; box-shadow: 0 2px 0 var(--ink); }
-.ih-foe.quiet b { display: none; }
 .ih-map .dropcd {
   position: absolute; left: 50%; top: 0.7em; transform: translateX(-50%); z-index: 4; white-space: nowrap;
   font-family: var(--display); font-weight: 900; font-style: italic; font-size: 1.15em; color: #fffaf0;

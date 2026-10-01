@@ -267,25 +267,25 @@ export const GLIDE_MIN_ANGLE = 0.24;
 /** Steepest path (looking straight down). */
 export const GLIDE_MAX_ANGLE = 1.4;
 /** Airspeed held with W on the flattest path, and straight down (m/s). */
-export const GLIDE_FLAT_SPEED = 30;
-export const GLIDE_DIVE_SPEED = 58;
+export const GLIDE_FLAT_SPEED = 25;
+export const GLIDE_DIVE_SPEED = 46;
 /** Fraction of that airspeed held with no W/S, and with S held. */
 export const GLIDE_NEUTRAL = 0.7;
 export const GLIDE_BRAKE = 0.35;
 /** Looking up (toward straight up) sheds up to this fraction of the target airspeed. */
 export const GLIDE_STALL = 0.3;
 /** You always sink at least this fast (m/s). */
-export const GLIDE_MIN_SINK = 7;
+export const GLIDE_MIN_SINK = 5.8;
 /** Speeding up (m/s²): GAIN, plus GAIN_DIVE × sin(path angle). Diving builds speed fast. */
 export const GLIDE_GAIN = 6;
-export const GLIDE_GAIN_DIVE = 30;
+export const GLIDE_GAIN_DIVE = 20;
 /** Slowing down (m/s²): speed built in a dive bleeds off slowly; S brakes harder. */
 export const GLIDE_DRAG = 4;
 export const GLIDE_BRAKE_DRAG = 12;
 /** How fast the velocity swings onto the new path (m/s²): pull-ups and push-overs swoop. */
-export const GLIDE_TURN = 70;
+export const GLIDE_TURN = 45;
 /** A/D: sideways slip (m/s). */
-export const GLIDE_STRAFE = 11;
+export const GLIDE_STRAFE = 9;
 /** Pancaked on landing for this long, then pop back up. */
 export const SPLAT_TIME = 0.42;
 /** Spawn shield: the whole drop, plus this long after touching down. */
