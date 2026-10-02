@@ -103,6 +103,10 @@ function runSingle() {
           <button class="btn" id="rand" title="random seed (R)">Random</button>
           <button class="btn primary" id="go">Go</button>
         </div>
+        <div class="seedrow links">
+          <a class="btn" id="viewlink" href="#" title="fly around this island in 3D">Open 3D view ↗</a>
+          <button class="btn" id="copyseed" title="copy the seed to paste into the lobby's seed field">Copy seed</button>
+        </div>
         <div class="opts"><label class="chk"><input type="checkbox" id="skipdecor" /> skipDecor</label></div>
         <div class="card" id="stats"></div>
         <div class="card"><h2>Timings <span id="ttotal"></span></h2><table class="t num" id="timings"></table></div>
@@ -144,6 +148,7 @@ function runSingle() {
     if (skipDecor) g.set("skipDecor", "1");
     if (FAKE) g.set("fake", "1");
     $<HTMLAnchorElement>("gallink").href = `${location.pathname}?${g}`;
+    $<HTMLAnchorElement>("viewlink").href = `/tools/view.html?seed=${seed}`;
   }
 
   // ---- layout / view ----
@@ -480,6 +485,18 @@ function runSingle() {
   seedInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") setSeed(num(seedInput.value, seed));
   });
+  let copyTimer = 0;
+  $("copyseed").onclick = async () => {
+    const btn = $("copyseed");
+    try {
+      await navigator.clipboard.writeText(String(seed));
+      btn.textContent = `Copied ${seed} ✓`;
+    } catch {
+      btn.textContent = "Copy failed";
+    }
+    clearTimeout(copyTimer);
+    copyTimer = window.setTimeout(() => (btn.textContent = "Copy seed"), 1500);
+  };
   skipBox.addEventListener("change", () => {
     skipDecor = skipBox.checked;
     regenerate();
