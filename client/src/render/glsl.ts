@@ -150,17 +150,3 @@ void RE_IndirectDiffuse_Toon(const in vec3 irradiance, const in vec3 geometryPos
 #define RE_Direct RE_Direct_Toon
 #define RE_IndirectDiffuse RE_IndirectDiffuse_Toon
 `;
-
-/** Compact 2D rotation + wind helpers for instanced foliage. */
-export const WIND_FN = /* glsl */ `
-vec3 windOffset(vec3 worldBase, float sway, float flutter, float phase, float h) {
-  float t = uTime;
-  float gust = 0.55 + 0.45 * sin(t * 0.35 + dot(worldBase.xz, uWind) * 0.02);
-  float s = sin(t * 1.3 + phase) * 0.6 + sin(t * 2.1 + phase * 1.7) * 0.25;
-  vec3 dir = vec3(uWind.x, 0.0, uWind.y);
-  vec3 off = dir * (sway * sway) * (0.35 * gust + 0.25 * s) * h;
-  float f = sin(t * 7.0 + phase * 3.0 + worldBase.y) * flutter * 0.06 * (0.6 + gust);
-  off += vec3(f, f * 0.6, -f * 0.5);
-  return off;
-}
-`;

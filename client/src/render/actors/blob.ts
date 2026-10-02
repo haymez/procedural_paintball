@@ -6,7 +6,7 @@
 // increasing counter-clockwise seen from above (facing = (sin yaw, 0, cos yaw)).
 // aimPitch radians, + = aiming up.
 import * as THREE from "three";
-import { B, buildBlobGeometry, buildRig, SHOULDER_L, HIP_L, ARM_REST_LEN, LEG_REST_LEN } from "./blobRig";
+import { B, BLOB_LODS, buildBlobGeometry, buildRig, SHOULDER_L, HIP_L, ARM_REST_LEN, LEG_REST_LEN } from "./blobRig";
 import { makeBlobMaterial, makeBlobUniforms, type BlobUniforms } from "./blobMaterial";
 import { MARKER_MUZZLE, MuzzlePuff } from "./marker";
 import { clamp, damp, lerp, smoothstep, Spring, rng } from "./builder";
@@ -187,6 +187,7 @@ class Blob implements BlobActor {
   private saccT = 1;
   private saccX = 0;
   private saccY = 0;
+  /** Water fins: crest/fins fanned out + tail, 0..1. */
   private sea = 0;
   private wet = 0;
   private dustT = 0;
@@ -205,6 +206,16 @@ class Blob implements BlobActor {
   private flaps: Flaps;
   /** Googly-eye wobble after a splat landing. */
   private googly = 0;
+  /** Dog-style shake-off right after popping up from a splat, 1 → 0. */
+  private shake = 0;
+  /** Glide: limbs flung open (springy, overshoots a little). */
+  private glideOpen = new Spring(70, 7);
+  /** Glide: bank about the long axis, lags and settles into turns. */
+  private bank = new Spring(40, 9);
+  /** Glide: 0 cruising .. 1 at full dive speed (wind ripple, squint, blown-back crest). */
+  private glideFast = 0;
+  /** Glide: 0 .. 1 at the flattest (braking) glide: the flaps cup up. */
+  private glideFlare = 0;
 
   // springs
   private squash = new Spring(320, 11, 1);
@@ -217,6 +228,11 @@ class Blob implements BlobActor {
   private pudY = new Spring(160, 10, 1);
   private pudXZ = new Spring(120, 8, 1);
 
+  /** Bind-pose (head-local) eye positions. */
+  private eyeRest: THREE.Vector3[];
+  /** One geometry per LOD (same rig); swapped by on-screen size. */
+  private geos: THREE.BufferGeometry[] = [];
+  private lod = 0;
   private muzzleW = new THREE.Vector3();
   private muzzleDir = new THREE.Vector3(0, 0, 1);
   private tagW = new THREE.Vector3();
@@ -230,9 +246,14 @@ class Blob implements BlobActor {
     this.material = makeBlobMaterial(this.u);
     const { geo, splatPoints } = buildBlobGeometry(this.color);
     this.splatPoints = splatPoints;
+    this.geos = [geo];
+    for (let l = 1; l < BLOB_LODS; l++) this.geos.push(buildBlobGeometry(this.color, l).geo);
     const rig = buildRig(geo, this.material);
     this.mesh = rig.mesh;
+    // pick the LOD for the next frame from the main view (shadow passes don't call this)
+    this.mesh.onBeforeRender = (_r, _s, cam) => this.pickLod(cam);
     this.bones = rig.bones;
+    this.eyeRest = [this.bones[B.eyeL].position.clone(), this.bones[B.eyeR].position.clone()];
     this.object.add(this.mesh);
     this.object.name = "blob";
     this.setColors(opts.color, opts.crestColor);
@@ -271,9 +292,22 @@ class Blob implements BlobActor {
     this.flaps?.setColor(this.color);
     this.u.uCrest.value.copy(crestColor !== undefined ? new THREE.Color(crestColor) : crestFor(color));
     if (changed && this.mesh) {
-      const old = this.mesh.geometry;
-      this.mesh.geometry = buildBlobGeometry(this.color).geo;
-      old.dispose();
+      for (const g of this.geos) g.dispose();
+      for (let l = 0; l < BLOB_LODS; l++) this.geos[l] = buildBlobGeometry(this.color, l).geo;
+      this.mesh.geometry = this.geos[this.lod];
+    }
+  }
+
+  private pickLod(cam: THREE.Camera): void {
+    const c = cam as THREE.PerspectiveCamera;
+    if (!c.isPerspectiveCamera) return;
+    // world-space view half-height at the blob: ~same pixel size whatever the fov / scope zoom
+    _v.setFromMatrixPosition(c.matrixWorld);
+    const h = _v.distanceTo(this.object.position) * Math.tan((c.fov * Math.PI) / 360) / c.zoom;
+    const want = this.lod === 0 ? (h > LOD_FAR ? 1 : 0) : h < LOD_NEAR ? 0 : 1;
+    if (want !== this.lod) {
+      this.lod = want;
+      this.mesh.geometry = this.geos[want];
     }
   }
 
@@ -391,6 +425,15 @@ class Blob implements BlobActor {
     const w = this.fade * this.fade * (3 - 2 * this.fade);
     const o = this.out;
     for (let i = 0; i < P.COUNT; i++) o[i] = this.from[i] + (this.tgt[i] - this.from[i]) * w;
+    if (this.shake > 0) {
+      // brrrr: shake the dust off after a splat
+      const k = this.shake * this.shake, a = this.t * 31;
+      o[P.headYaw] += Math.sin(a) * 0.32 * k;
+      o[P.chestYaw] -= Math.sin(a - 0.5) * 0.16 * k;
+      o[P.rootRoll] += Math.sin(a - 1) * 0.06 * k;
+      o[P.crest] += 0.4 * k;
+      o[P.eyeOpen] = Math.min(o[P.eyeOpen], 1 - 0.8 * k);
+    }
 
     // ---- springs + expression timers -----------------------------------------
     this.squash.target = 1;
@@ -398,6 +441,16 @@ class Blob implements BlobActor {
     if (s.mode === "fall") this.squash.target = 1.06;
     this.squash.step(dt);
     this.googly = Math.max(0, this.googly - dt * 0.7);
+    this.shake = Math.max(0, this.shake - dt * 2.2);
+    this.glideOpen.step(dt);
+    this.bank.target = s.mode === "glide" ? clamp(this.yawRate * 0.22 + this.lvx * 0.035, -0.75, 0.75) : 0;
+    this.bank.step(dt);
+    if (s.mode === "glide") {
+      // wind: the skin ripples and the crest blows back at speed
+      this.wobble = Math.max(this.wobble, this.glideFast * 0.3);
+      this.crestFlop.target = -0.32 * this.glideFast;
+    } else this.crestFlop.target = 0;
+    if (s.mode === "splat") this.pudXZ.target = lerp(1.1, 1.0, smoothstep(0.2, 0.42, this.modeT));
     this.jp.step(dt);
     this.jr.step(dt);
     this.hl.step(dt);
@@ -434,7 +487,7 @@ class Blob implements BlobActor {
     this.applyMaterial(s, dt);
     // skin flaps between arms and legs
     this.flapOpen = lerp(this.flapOpen, s.mode === "glide" ? this.spread : 0, damp(s.mode === "glide" ? 12 : 20, dt));
-    this.flaps.update(this.flapOpen, this.bones, this.object, this.t);
+    this.flaps.update(this.flapOpen, this.bones, this.object, this.t, this.glideFast, this.glideFlare);
 
     // FX bits
     if (this.fx) {
@@ -466,21 +519,30 @@ class Blob implements BlobActor {
     }
     if (m === "dive") { this.squash.v += 3; this.surprise = 1; }
     if (m === "fall") this.flail = 0;
-    if (m === "glide") { this.surprise = 1; this.spread = 0; }
+    if (m === "glide") {
+      // whoa! then fling everything out wide
+      this.surprise = 1;
+      this.spread = 0;
+      this.glideOpen.x = 0; this.glideOpen.v = 0; this.glideOpen.target = 1;
+      this.bank.x = 0; this.bank.v = 0;
+    }
     if (m === "splat") {
-      // SPLORT: pancake flat, limbs splayed, eyes rattling
-      this.squash.v -= 7;
-      this.pudXZ.v += 5; this.pudXZ.target = 1.18;
+      // SPLORT: instantly flat as a pancake, starfished, eyes rattling
+      this.squash.v -= 8;
+      this.pudXZ.v += 4; this.pudXZ.target = 1.1;
       this.wobble = 1;
       this.googly = 1;
       this.surprise = 1;
-      this.fade = 0.55;
+      this.fade = 0.8;
+      this.bank.x = 0; this.bank.v = 0;
     }
     if (prev === "splat") {
-      // ...and boing back up
-      this.squash.v += 12;
+      // ...gather, boing back up, and shake it off
+      this.squash.v += 11;
       this.pudXZ.target = 1;
       this.wobble = Math.max(this.wobble, 0.8);
+      this.shake = 1;
+      this.fade = 0.25;
     }
     if (m === "swim" && prev === "underwater" && s.breath < 0.25) { this.gasp = 1; this.squash.v += 4; }
     if ((m === "swim" || m === "underwater") && (prev === "dive" || prev === "fall" || prev === "jump")) {
@@ -766,52 +828,69 @@ class Blob implements BlobActor {
         break;
       }
       case "glide": {
-        // flying squirrel: belly down, arms and legs stretched wide, flaps taut
+        // flying squirrel: belly down, limbs spread wide, flaps taut. Cruising it floats
+        // and soars; diving it sweeps its arms back and squints into the wind; at the
+        // flattest glide it flares like it's braking.
         const hs = Math.hypot(s.vel.x, s.vel.z), sink = Math.max(0, -s.vel.y);
         const ang = Math.atan2(sink, Math.max(1, hs)); // ~0.25 flare, ~0.4 glide, ~0.6 dive, ~1.4 tuck
-        const tuck = smoothstep(0.8, 1.15, ang);
+        const tuck = smoothstep(0.75, 1.2, ang);
         const flare = 1 - smoothstep(0.26, 0.42, ang);
-        const open = smoothstep(0.05, 0.6, mt);
+        const fast = smoothstep(26, 44, Math.hypot(hs, sink));
+        this.glideFast = fast;
+        this.glideFlare = flare;
+        const open = clamp(this.glideOpen.x, 0, 1.15);
         const sp = open * (1 - tuck);
-        this.spread = sp;
-        const fl = Math.sin(t * 19) * 0.03 + Math.sin(t * 31 + 1) * 0.015;
-        o[P.rootPitch] = 1.02 + ang * 0.55 - flare * 0.12 + tuck * 0.15 + (1 - open) * 0.3;
+        this.spread = Math.min(1, sp);
+        // slow soaring float (no jitter); a little faster and tighter at speed
+        const fa = t * (2.1 + fast * 2.4);
+        const fl = Math.sin(fa) * (0.035 - fast * 0.015);
+        const fl2 = Math.sin(fa * 0.7 + 1.3) * 0.025;
+        o[P.rootPitch] = 1.05 + ang * 0.5 - flare * 0.22 + tuck * 0.12 + (1 - Math.min(1, open)) * 0.35 + Math.sin(t * 1.4) * 0.025;
         o[P.rootY] = 0.15;
-        o[P.rootBank] = clamp(this.yawRate * 0.2 + this.lvx * 0.035, -0.7, 0.7);
-        o[P.headPitch] = -0.95 + tuck * 0.35;
-        o[P.chestPitch] = -0.12;
+        o[P.rootBank] = this.bank.x;
+        o[P.headPitch] = -0.95 + tuck * 0.3 + flare * 0.12;
+        o[P.chestPitch] = -0.12 - flare * 0.08;
         o[P.gunAim] = 0;
         o[P.aimFollow] = 0;
-        setHand(o, P.hLx, lerp(0.3, 0.8, sp), lerp(1.42, 1.05 + fl, sp), lerp(0.2, 0.12 + flare * 0.14, sp));
-        setHand(o, P.hRx, lerp(-0.3, -0.8, sp), lerp(1.42, 1.05 - fl, sp), lerp(0.2, 0.12 + flare * 0.14, sp));
-        setFoot(o, P.fLx, lerp(0.1, 0.44, sp), lerp(0.02, 0.12 - fl, sp), lerp(-0.08, -0.1, sp));
-        setFoot(o, P.fRx, lerp(-0.1, -0.44, sp), lerp(0.02, 0.12 + fl, sp), lerp(-0.08, -0.1, sp));
+        // arms: spread wide (forward a touch when flaring), swept back by the hips in a dive
+        const hx = lerp(0.36, lerp(0.8, 0.74, flare), sp), hy = lerp(lerp(1.42, 0.66, tuck), 1.05 + flare * 0.18, sp), hz = lerp(lerp(0.2, -0.14, tuck), 0.12 + flare * 0.16, sp);
+        setHand(o, P.hLx, hx, hy + fl, hz + fl2);
+        setHand(o, P.hRx, -hx, hy - fl, hz - fl2);
+        const fx = lerp(lerp(0.1, 0.12, tuck), 0.44, sp), fz = lerp(-0.08, -0.1 - flare * 0.06, sp);
+        setFoot(o, P.fLx, fx, lerp(0.02, 0.12, sp) - fl * 0.6, fz);
+        setFoot(o, P.fRx, -fx, lerp(0.02, 0.12, sp) + fl * 0.6, fz);
         o[P.fLp] = 1.2;
         o[P.fRp] = 1.2;
-        o[P.squash] = 1 - sp * 0.08;
-        o[P.mouthO] = 0.35 + tuck * 0.55 + (1 - open) * 0.5;
+        o[P.squash] = 1 - sp * 0.08 + tuck * 0.06;
+        const whoa = clamp(1 - open, 0, 1);
+        o[P.mouthO] = clamp(0.25 + fast * 0.4 + tuck * 0.3 + whoa * 0.6, 0, 1);
         o[P.smile] = 1;
-        o[P.eyeOpen] = 1;
-        o[P.crest] = 1;
-        o[P.slant] = tuck * 0.45 - flare * 0.1;
+        o[P.eyeOpen] = 1 - fast * 0.28 * (1 - whoa);
+        o[P.crest] = 1 - fast * 0.35;
+        o[P.slant] = fast * 0.3 + tuck * 0.2 - flare * 0.1;
         break;
       }
       case "splat": {
-        // pancake: squashed flat, limbs splayed like a dropped gummy
-        o[P.squash] = 0.36;
+        // SPLORT: pancaked and starfished, jiggling, then it gathers itself for the boing
+        const gather = smoothstep(0.2, 0.42, mt);
+        const jig = Math.sin(mt * 40) * Math.exp(-mt * 9);
+        o[P.squash] = lerp(0.42, 0.66, gather) + jig * 0.05;
         o[P.gunAim] = 0;
         o[P.aimFollow] = 0;
-        o[P.headPitch] = -0.15;
-        setHand(o, P.hLx, 0.4, 0.34, 0.2);
-        setHand(o, P.hRx, -0.4, 0.34, 0.2);
-        setFoot(o, P.fLx, 0.22, 0.02, -0.1);
-        setFoot(o, P.fRx, -0.22, 0.02, -0.1);
-        o[P.fLp] = -0.4;
-        o[P.fRp] = -0.4;
-        o[P.mouthO] = 0.55;
-        o[P.smile] = 0.6;
+        o[P.headPitch] = -0.12 - gather * 0.08;
+        o[P.chestPitch] = jig * 0.05;
+        const sp = 1 - gather * 0.6;
+        setHand(o, P.hLx, lerp(0.34, 0.54, sp), lerp(0.62, 0.44, sp), lerp(0.14, 0.1, sp));
+        setHand(o, P.hRx, lerp(-0.34, -0.54, sp), lerp(0.62, 0.44, sp), lerp(0.14, 0.1, sp));
+        setFoot(o, P.fLx, lerp(0.15, 0.27, sp), 0.03, lerp(0.02, -0.1, sp));
+        setFoot(o, P.fRx, lerp(-0.15, -0.27, sp), 0.03, lerp(0.02, -0.1, sp));
+        o[P.fLp] = -0.5 * sp;
+        o[P.fRp] = -0.5 * sp;
+        o[P.mouthO] = lerp(0.75, 0.15, gather);
+        o[P.smile] = 0.5 + gather * 0.5;
         o[P.eyeOpen] = 1;
-        o[P.crest] = 1.1;
+        o[P.crest] = 0.5 + gather * 0.3;
+        o[P.slant] = -0.25 * (1 - gather);
         break;
       }
       case "eliminated":
@@ -873,12 +952,15 @@ class Blob implements BlobActor {
 
     // ---- root: pivot around the body center, squash & stretch ----------------
     const root = bn[B.root];
-    let sy = clamp(this.squash.x * o[P.squash], this.mode === "splat" ? 0.26 : 0.55, 1.5);
+    let sy = clamp(this.squash.x * o[P.squash], this.mode === "splat" ? 0.34 : 0.55, 1.5);
     let sxz = 1 / Math.sqrt(sy);
     if (this.mode === "eliminated") this.stepElimination(dt);
     const popS = this.mode === "spawn" ? Math.max(0.001, this.pop.x) : 1;
     sy *= this.pudY.x * popS;
     sxz *= this.pudXZ.x * popS;
+    // pancaked: hands, feet and fins keep (most of) their shape instead of smearing flat
+    const flatK = this.mode === "splat" ? 0.75 : 0;
+    const csx = lerp(1, 1 / sxz, flatK), csy = lerp(1, 1 / sy, flatK);
     _e.set(o[P.rootPitch], o[P.rootBank], o[P.rootRoll]);
     root.quaternion.setFromEuler(_e);
     const pivot = 0.9;
@@ -929,6 +1011,7 @@ class Blob implements BlobActor {
       chest.worldToLocal(_tp);
       hand.position.copy(_tp);
       hand.rotation.set(0, 0, 0);
+      hand.scale.set(csx * (flatK ? 1.1 : 1), csy * (flatK ? 0.7 : 1), csx * (flatK ? 1.1 : 1));
       // noodle arm: aim the shoulder bone at the hand and stretch
       const arm = bn[side === 0 ? B.armL : B.armR];
       _tq.set(SHOULDER_L[0] * (side === 0 ? 1 : -1), SHOULDER_L[1] - 0.9, SHOULDER_L[2]);
@@ -947,6 +1030,7 @@ class Blob implements BlobActor {
       const fi = side === 0 ? P.fLx : P.fRx;
       foot.position.set(o[fi], o[fi + 1], o[fi + 2]);
       foot.rotation.set(o[side === 0 ? P.fLp : P.fRp], 0, 0);
+      foot.scale.set(csx, csy * (flatK ? 0.7 : 1), csx);
       foot.updateMatrixWorld(false);
       const leg = bn[side === 0 ? B.legL : B.legR];
       const hips = bn[B.hips];
@@ -979,6 +1063,19 @@ class Blob implements BlobActor {
         // keep the eyes round and poking out of the puddle
         eye.scale.set(eyeScale / Math.max(0.2, root.scale.x), eyeScale / Math.max(0.12, root.scale.y), eyeScale / Math.max(0.2, root.scale.z));
       }
+      const rest = this.eyeRest[side];
+      if (flat) {
+        // pancaked / puddled: the head spreads wider than the (round) eyes, so lift them out
+        // on top of it like a frog's instead of letting them sink into the face
+        const k = smoothstep(0.85, 0.5, root.scale.y);
+        const rsx = Math.max(0.05, root.scale.x), rsy = Math.max(0.02, root.scale.y);
+        const top = 1.6 * rsy + 0.05;
+        eye.position.set(
+          lerp(rest.x, (0.15 * sgn) / rsx, k),
+          lerp(rest.y, (top - 1.12 * rsy) / rsy, k),
+          lerp(rest.z, 0.26 / rsx, k),
+        );
+      } else eye.position.copy(rest);
       const pupil = bn[side === 0 ? B.pupilL : B.pupilR];
       if (elim && this.elimT > 0.3) {
         // dazed spinning pupils
@@ -993,21 +1090,21 @@ class Blob implements BlobActor {
       lid.rotation.set(lerp(-0.9, 1.5, closed), 0, sgn * o[P.slant] * 0.5);
     }
     const mo = clamp(Math.max(o[P.mouthO], this.wince * 0.8, this.gasp, this.surprise * 0.6), 0, 1);
-    bn[B.mouthO].scale.set(mo > 0.02 ? 0.55 + 0.45 * mo : 0.001, mo > 0.02 ? mo * 1.1 : 0.001, mo > 0.02 ? 1 : 0.001);
+    bn[B.mouthO].scale.set(mo > 0.02 ? (0.55 + 0.45 * mo) * csx : 0.001, mo > 0.02 ? mo * 1.1 * lerp(1, csy * 0.7, flatK) : 0.001, mo > 0.02 ? csx : 0.001);
     const sm = clamp(o[P.smile] * (1 - mo * 1.5), 0, 1);
-    bn[B.smile].scale.setScalar(Math.max(0.001, sm));
+    bn[B.smile].scale.set(csx, lerp(1, csy * 0.7, flatK), csx).multiplyScalar(Math.max(0.001, sm));
 
     // ---- fins ------------------------------------------------------------------
     const flare = clamp(Math.max(o[P.crest], this.sea), 0, 1.2);
-    bn[B.crest].scale.set(1, 0.7 + flare * 0.7, 1 + flare * 0.15);
+    bn[B.crest].scale.set(csx, (0.7 + flare * 0.7) * lerp(1, csy * 0.6, flatK), (1 + flare * 0.15) * csx);
     bn[B.crest].rotation.x = clamp(this.crestFlop.x, -0.5, 0.5) + Math.sin(t * 9) * 0.03 * flare;
     for (let side = 0; side < 2; side++) {
       const sgn = side === 0 ? 1 : -1;
       const fin = bn[side === 0 ? B.finL : B.finR];
-      fin.scale.setScalar(0.75 + flare * 0.55);
+      fin.scale.set(csx, csy, csx).multiplyScalar(0.75 + flare * 0.55);
       fin.rotation.set(-flare * 0.15, sgn * (flare * 0.25 + Math.sin(t * 6 + side) * 0.06 * flare), -sgn * flare * 0.3);
     }
-    bn[B.dorsal].scale.set(1, 0.55 + flare * 0.7, 0.55 + flare * 0.7);
+    bn[B.dorsal].scale.set(csx, (0.55 + flare * 0.7) * csy, (0.55 + flare * 0.7) * csx);
     const tail = bn[B.tail];
     const ts = Math.max(0.001, this.sea);
     tail.scale.setScalar(ts);
@@ -1055,9 +1152,9 @@ class Blob implements BlobActor {
     u.uFlash.value = this.flash * 0.55;
     this.wet = lerp(this.wet, clamp(s.wetness, 0, 1), damp(4, dt));
     u.uWet.value = this.wet;
-    const seaT = s.mode === "underwater" ? 1 : smoothstep(0.6, 0.95, s.wetness);
-    this.sea += (seaT - this.sea) * damp(seaT > this.sea ? 1.4 : 0.45, dt);
-    u.uSea.value = this.sea;
+    // in the water the fins fan out and the little tail comes out to paddle
+    const seaT = s.mode === "underwater" || s.mode === "swim" ? 1 : 0;
+    this.sea += (seaT - this.sea) * damp(seaT > this.sea ? 2.5 : 1.2, dt);
 
     // coats: new ones splat in with overshoot, washed ones shrink away
     const n = Math.min(3, s.coats.length);
@@ -1119,7 +1216,7 @@ class Blob implements BlobActor {
 
   dispose(): void {
     this.object.removeFromParent();
-    this.mesh.geometry.dispose();
+    for (const g of this.geos) g.dispose();
     this.material.dispose();
     this.shield.geometry.dispose();
     this.shieldMat.dispose();
@@ -1127,6 +1224,10 @@ class Blob implements BlobActor {
     this.flaps.dispose();
   }
 }
+
+/** LOD switch (view half-height in m at the blob, hysteresis): ~ a blob under ~1/16 of the screen. */
+const LOD_FAR = 15;
+const LOD_NEAR = 13;
 
 const _X = new THREE.Vector3(1, 0, 0);
 const _tp = new THREE.Vector3();
@@ -1202,13 +1303,16 @@ const _fi = new THREE.Vector3(), _fo = new THREE.Vector3(), _fup = new THREE.Vec
 class Flaps {
   readonly mesh: THREE.Mesh;
   private pos: Float32Array;
+  private col: Float32Array;
   private geo: THREE.BufferGeometry;
   private mat: THREE.MeshToonMaterial;
 
   constructor(color: THREE.Color) {
     this.geo = new THREE.BufferGeometry();
     this.pos = new Float32Array(2 * FU * FV * 3);
+    this.col = new Float32Array(2 * FU * FV * 3);
     this.geo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute("color", new THREE.BufferAttribute(this.col, 3));
     const idx: number[] = [];
     for (let side = 0; side < 2; side++) {
       const b = side * FU * FV;
@@ -1220,7 +1324,7 @@ class Flaps {
         }
     }
     this.geo.setIndex(idx);
-    this.mat = makeToonMaterial({ side: THREE.DoubleSide });
+    this.mat = makeToonMaterial({ side: THREE.DoubleSide, vertexColors: true });
     this.setColor(color);
     this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.frustumCulled = false;
@@ -1229,16 +1333,30 @@ class Flaps {
   }
 
   setColor(c: THREE.Color): void {
-    this.mat.color.copy(c).lerp(new THREE.Color(0xfff6e6), 0.1);
+    // body color at the body, fading to a soft creamy edge (like a squirrel's belly fur)
+    const edge = c.clone().lerp(_cream, 0.4);
+    const col = this.col;
+    for (let i = 0; i < 2 * FU * FV; i++) {
+      const v = (i % FV) / (FV - 1);
+      const k = v * v;
+      col[i * 3] = c.r + (edge.r - c.r) * k;
+      col[i * 3 + 1] = c.g + (edge.g - c.g) * k;
+      col[i * 3 + 2] = c.b + (edge.b - c.b) * k;
+    }
+    (this.geo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
   }
 
-  /** open 0..1; positions from the rig bones (object-local). */
-  update(open: number, bones: THREE.Bone[], obj: THREE.Object3D, t: number): void {
+  /** open 0..1; positions from the rig bones (object-local). fast / flare 0..1 from the glide. */
+  update(open: number, bones: THREE.Bone[], obj: THREE.Object3D, t: number, fast = 0, flare = 0): void {
     this.mesh.visible = open > 0.03;
     if (!this.mesh.visible) return;
     // the blob's back (billow direction), object-local
     _fup.set(0, 0, -1).applyQuaternion(bones[B.root].quaternion); // root sits directly under the object
     const p = this.pos;
+    // cupped up like a sail; flatter + a travelling ripple toward the trailing edge at speed
+    const cup = 0.1 + flare * 0.05 - fast * 0.03;
+    const rip = 0.008 + fast * 0.02;
+    const ra = t * (6 + fast * 9);
     for (let side = 0; side < 2; side++) {
       obj.worldToLocal(bones[side === 0 ? B.armL : B.armR].getWorldPosition(_fs));
       obj.worldToLocal(bones[side === 0 ? B.legL : B.legR].getWorldPosition(_fh));
@@ -1252,10 +1370,11 @@ class Flaps {
         // scalloped outer edge: sags inward between wrist and ankle
         const scallop = Math.sin(Math.PI * fu) * 0.28;
         _fo.lerp(_fi, scallop);
+        const arc = Math.sin(Math.PI * fu);
         for (let v = 0; v < FV; v++) {
           const fv = (v / (FV - 1)) * open;
           const k = (b + u * FV + v) * 3;
-          const billow = Math.sin(Math.PI * fu) * Math.sin(Math.PI * Math.min(1, fv * 1.15)) * (0.1 + Math.sin(t * 23 + u * 1.3 + side) * 0.012);
+          const billow = arc * Math.sin(Math.PI * Math.min(1, fv * 1.15)) * cup + Math.sin(ra - fu * 4.5 + side * 1.7) * rip * fv * arc;
           p[k] = _fi.x + (_fo.x - _fi.x) * fv + _fup.x * billow;
           p[k + 1] = _fi.y + (_fo.y - _fi.y) * fv + _fup.y * billow;
           p[k + 2] = _fi.z + (_fo.z - _fi.z) * fv + _fup.z * billow;
@@ -1271,6 +1390,8 @@ class Flaps {
     this.mat.dispose();
   }
 }
+
+const _cream = new THREE.Color(0xfff6e6);
 
 export function createBlob(opts: BlobOptions): BlobActor {
   return new Blob(opts);

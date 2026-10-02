@@ -1,6 +1,6 @@
 // Blob skin shader: the shared toon material + per-vertex part masks for
-// player/crest/belly color, paint coats (splats + drips), wet sheen, the dark
-// deep-sea Luca sea-monster scales, jelly wobble, hit flash and elimination swirl.
+// player/crest/belly color, paint coats (splats + drips), wet sheen, gummy
+// translucency, jelly wobble, hit flash and elimination swirl.
 import * as THREE from "three";
 import { makeToonMaterial } from "../style";
 
@@ -12,7 +12,6 @@ export interface BlobUniforms {
   uCoatC: { value: THREE.Vector3[] };
   uCoatAmt: { value: THREE.Vector3 };
   uWet: { value: number };
-  uSea: { value: number };
   uTime: { value: number };
   uWobble: { value: number };
   uFlash: { value: number };
@@ -30,7 +29,6 @@ export function makeBlobUniforms(): BlobUniforms {
     uCoatC: { value: [new THREE.Vector3(0, 1, 0.3), new THREE.Vector3(0, 1, 0.3), new THREE.Vector3(0, 1, 0.3)] },
     uCoatAmt: { value: new THREE.Vector3() },
     uWet: { value: 0 },
-    uSea: { value: 0 },
     uTime: { value: 0 },
     uWobble: { value: 0 },
     uFlash: { value: 0 },
@@ -66,7 +64,6 @@ uniform vec3 uCoatCol[3];
 uniform vec3 uCoatC[3];
 uniform vec3 uCoatAmt;
 uniform float uWet;
-uniform float uSea;
 uniform float uTime;
 uniform float uFlash;
 uniform float uPop;
@@ -127,41 +124,10 @@ const FRAG_COLOR = /* glsl */ `
   float pm = vPart.w;
   vec3 skin = mix(uBody, uBelly, vPart.z);
   vec3 crestC = uCrest;
-
-  // --- Luca sea-monster skin: sweeps up from the feet as uSea rises -------
-  float th = atan(p.x, p.z);
-  float front = uSea * 2.3 - 0.25;
-  float seaN = bNoise(p * 9.0 + uSeed);
-  float sea = smoothstep(front + 0.12, front - 0.12, p.y + (seaN - 0.5) * 0.3);
-  if (sea > 0.001) {
-    // overlapping round scales, rows offset; softer on the face
-    vec2 sc = vec2(th * 0.32 / 0.085, p.y / 0.07);
-    float row = floor(sc.y);
-    sc.x += 0.5 * mod(row, 2.0);
-    vec2 f = fract(sc) - vec2(0.5, 0.15);
-    float dd = length(f * vec2(1.0, 1.25));
-    float face = smoothstep(1.18, 1.3, p.y) * smoothstep(0.12, 0.25, p.z);
-    float edge = smoothstep(0.5, 0.62, dd) * (1.0 - face * 0.8);
-    float tint = bHash(vec3(floor(sc), 3.0));
-    // deep-sea palette: dark teal-navy back, dark sea-green belly, a hint of the
-    // player's own color so blobs stay tellable apart
-    vec3 seaBack = mix(vec3(0.035, 0.13, 0.17), uBody * vec3(0.16, 0.22, 0.24), 0.2);
-    vec3 seaBelly = vec3(0.08, 0.27, 0.25);
-    vec3 seaC = mix(seaBack, seaBelly, max(vPart.z, face * 0.5));
-    // scale rims darker, each scale a touch different
-    seaC *= (1.0 - 0.35 * edge) * (0.85 + 0.3 * tint);
-    // slow, dim teal-to-violet iridescence sliding over the scales (no bright sheen)
-    float shim = sin(uTime * 2.2 + p.y * 10.0 - th * 3.0) * 0.5 + 0.5;
-    vec3 iri = mix(vec3(0.03, 0.2, 0.18), vec3(0.1, 0.07, 0.22), 0.5 + 0.5 * sin(th * 2.0 + p.y * 4.0 + uTime * 0.7));
-    seaC += iri * shim * shim * (1.0 - edge) * 0.55;
-    skin = mix(skin, seaC, sea);
-    crestC = mix(crestC, vec3(0.55, 0.14, 0.3), sea * 0.85);
-  }
-
   // rosy cheeks
   vec3 ck = vec3(abs(p.x) - 0.215, p.y - 1.325, p.z - 0.265);
-  float blush = smoothstep(0.075, 0.035, length(ck * vec3(1.0, 1.4, 1.6)));
-  skin = mix(skin, vec3(1.0, 0.45, 0.5), blush * 0.32 * (1.0 - sea * 0.5));
+  float blush = smoothstep(0.085, 0.03, length(ck * vec3(1.0, 1.4, 1.6)));
+  skin = mix(skin, vec3(1.0, 0.42, 0.48), blush * 0.42);
 
   vec3 col = diffuseColor.rgb * (1.0 - bw - cw) + skin * bw + crestC * cw;
 
@@ -185,7 +151,6 @@ const FRAG_COLOR = /* glsl */ `
   col *= 1.0 - 0.1 * uWet * bw;
   diffuseColor.rgb = col;
   vPaintAmt = paint;
-  vSeaAmt = sea;
 }
 `;
 
@@ -195,25 +160,26 @@ const FRAG_OUT = /* glsl */ `
   vec3 Nn = normal;
   float ndv = clamp(dot(Nn, V), 0.0, 1.0);
   float skinW = clamp(vPart.x + vPart.y, 0.0, 1.0);
-  // soft warm rim: gummy / clay translucency
-  float rim = smoothstep(0.62, 0.95, 1.0 - ndv);
-  // deep-sea skin: no warm glow, a faint cold teal edge so the dark body still reads in murky water
-  vec3 rimC = mix(mix(diffuseColor.rgb, vec3(1.0, 0.93, 0.8), 0.5), vec3(0.12, 0.42, 0.4), vSeaAmt);
-  outgoingLight += rimC * rim * 0.28 * skinW;
   #if NUM_DIR_LIGHTS > 0
     vec3 L = directionalLights[0].direction;
   #else
     vec3 L = normalize(vec3(0.3, 0.8, 0.5));
   #endif
+  // gummy translucency: the shadow side glows a little, warmer and more saturated
+  // instead of going grey
+  float away = 1.0 - clamp(dot(Nn, L) * 0.5 + 0.5, 0.0, 1.0);
+  outgoingLight += diffuseColor.rgb * diffuseColor.rgb * away * 0.22 * skinW;
+  // soft warm rim: clay / jelly edge light
+  float rim = smoothstep(0.58, 0.95, 1.0 - ndv);
+  outgoingLight += mix(diffuseColor.rgb, vec3(1.0, 0.93, 0.8), 0.5) * rim * 0.3 * skinW;
   vec3 H = normalize(L + V);
   float nh = max(dot(Nn, H), 0.0);
-  // wet sheen, but matte-ish scales: the sea skin damps the highlight
-  float gloss = max(uWet * skinW * (1.0 - 0.8 * vSeaAmt), vPaintAmt * 0.9);
+  float gloss = max(uWet * skinW, vPaintAmt * 0.9);
   // stepped toon highlight: a crisp blob plus a soft halo
   float spec = smoothstep(0.955, 0.97, nh) * 0.45 + smoothstep(0.8, 0.92, nh) * 0.08;
   outgoingLight += vec3(1.0, 0.98, 0.92) * spec * gloss;
   // tiny always-on gloss on the gummy skin
-  outgoingLight += vec3(1.0) * smoothstep(0.975, 0.985, nh) * 0.18 * skinW * (1.0 - 0.8 * vSeaAmt);
+  outgoingLight += vec3(1.0) * smoothstep(0.972, 0.985, nh) * 0.2 * skinW;
   outgoingLight = mix(outgoingLight, vec3(1.0, 0.97, 0.9), uFlash * skinW);
 }
 #include <opaque_fragment>
@@ -228,10 +194,10 @@ export function makeBlobMaterial(u: BlobUniforms): THREE.MeshToonMaterial {
       .replace("#include <common>", "#include <common>\n" + VERT_PARS)
       .replace("#include <begin_vertex>", VERT_MAIN);
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\n" + FRAG_PARS + "\nfloat vPaintAmt = 0.0;\nfloat vSeaAmt = 0.0;\n")
+      .replace("#include <common>", "#include <common>\n" + FRAG_PARS + "\nfloat vPaintAmt = 0.0;\n")
       .replace("#include <color_fragment>", FRAG_COLOR)
       .replace("#include <opaque_fragment>", FRAG_OUT);
   };
-  m.customProgramCacheKey = () => "isola-blob-v2";
+  m.customProgramCacheKey = () => "isola-blob-v3";
   return m;
 }

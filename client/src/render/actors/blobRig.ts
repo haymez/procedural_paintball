@@ -2,6 +2,7 @@
 // the marker) is baked into ONE skinned geometry → one draw call per blob.
 // Model space: feet at origin, +Y up, +Z forward, +X = the blob's LEFT.
 import * as THREE from "three";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { MeshBuilder, mat, smoothstep } from "./builder";
 import { addMarker } from "./marker";
 
@@ -84,12 +85,23 @@ function weldNormals(g: THREE.BufferGeometry): void {
   }
 }
 
-function bodyGeometry(): THREE.BufferGeometry {
+/**
+ * Mesh resolution per LOD: 0 = close-up (smooth silhouette, round eyes), 1 = far away
+ * (a blob a few dozen pixels tall; same rig, skin weights and parts).
+ */
+const DETAIL = [
+  { profile: 30, lathe: 28, eye: [18, 12], iris: 20, glint: [10, 6], lid: [18, 5], smile: [6, 18], mouth: [14, 8], tongue: [10, 6], tail: 12, limb: 12, hand: [14, 10], thumb: [10, 7], foot: [16, 9], finCurve: 7, finBevel: 2 },
+  { profile: 14, lathe: 12, eye: [9, 6], iris: 9, glint: [5, 3], lid: [9, 3], smile: [3, 8], mouth: [7, 4], tongue: [5, 3], tail: 6, limb: 6, hand: [7, 5], thumb: [5, 3], foot: [8, 5], finCurve: 2, finBevel: 1 },
+] as const;
+export const BLOB_LODS = DETAIL.length;
+
+function bodyGeometry(lod: number): THREE.BufferGeometry {
+  const D = DETAIL[lod];
   const curve = new THREE.SplineCurve(PROFILE.map(([r, y]) => new THREE.Vector2(r, y)));
-  const pts = curve.getPoints(18);
+  const pts = curve.getPoints(D.profile);
   pts[0].x = 0;
   pts[pts.length - 1].x = 0;
-  const g = new THREE.LatheGeometry(pts, 16);
+  const g = new THREE.LatheGeometry(pts, D.lathe);
   const P = g.getAttribute("position");
   for (let i = 0; i < P.count; i++) {
     let x = P.getX(i);
@@ -136,11 +148,24 @@ function basis(o: V3, u: V3, v: V3): THREE.Matrix4 {
   return new THREE.Matrix4().makeBasis(x, y, z).setPosition(o[0], o[1], o[2]);
 }
 
-function extrudeFin(shape: THREE.Shape, depth: number): THREE.BufferGeometry {
-  const g = new THREE.ExtrudeGeometry(shape, {
-    depth, bevelEnabled: true, bevelThickness: depth * 0.4, bevelSize: depth * 0.35, bevelSegments: 1, curveSegments: 3,
+/**
+ * Extruded fin, tapering from its full thickness at the base to a thin rounded edge
+ * at the tips, smooth-shaded so it reads as a soft gummy fin rather than a slab.
+ */
+function extrudeFin(shape: THREE.Shape, depth: number, height: number, lod: number): THREE.BufferGeometry {
+  const ex = new THREE.ExtrudeGeometry(shape, {
+    depth, bevelEnabled: true, bevelThickness: depth * 0.45, bevelSize: depth * 0.4, bevelSegments: DETAIL[lod].finBevel, curveSegments: DETAIL[lod].finCurve,
   });
+  ex.deleteAttribute("normal");
+  ex.deleteAttribute("uv");
+  const g = mergeVertices(ex, 1e-4);
+  ex.dispose();
   g.translate(0, 0, -depth / 2);
+  const P = g.getAttribute("position");
+  for (let i = 0; i < P.count; i++) {
+    const t = smoothstep(0, height, P.getY(i));
+    P.setZ(i, P.getZ(i) * (1 - 0.62 * t));
+  }
   g.computeVertexNormals();
   return g;
 }
@@ -155,14 +180,20 @@ export interface BlobRig {
 }
 
 const SKIN_BODY: [number, number, number, number] = [1, 0, 0, 1];
+// eye colors (linear, from sRGB hex)
+const SCLERA_RIM = new THREE.Color(0xdfe3f0);
+const IRIS_IN = new THREE.Color(0x4a2a1c);
+const IRIS_GLOW = new THREE.Color(0xa0622f);
+const IRIS_RIM = new THREE.Color(0x2b1610);
 const SKIN_CREST: [number, number, number, number] = [0, 1, 0, 0.3];
 const FIXED: [number, number, number, number] = [0, 0, 0, 0];
 
-export function buildBlobGeometry(color: THREE.ColorRepresentation): { geo: THREE.BufferGeometry; splatPoints: THREE.Vector3[] } {
+export function buildBlobGeometry(color: THREE.ColorRepresentation, lod = 0): { geo: THREE.BufferGeometry; splatPoints: THREE.Vector3[] } {
   const b = new MeshBuilder({ skinned: true, parts: true });
+  const D = DETAIL[lod];
 
   // --- body: blended hips → chest → head ------------------------------------
-  const body = bodyGeometry();
+  const body = bodyGeometry(lod);
   const splatPoints: THREE.Vector3[] = [];
   const bp = body.getAttribute("position");
   for (let i = 0; i < bp.count; i += 3) {
@@ -193,58 +224,70 @@ export function buildBlobGeometry(color: THREE.ColorRepresentation): { geo: THRE
     const pupil = side > 0 ? B.pupilL : B.pupilR;
     const lid = side > 0 ? B.lidL : B.lidR;
     const ex = EYE_POS[0] * side, ey = EYE_POS[1], ez = EYE_POS[2];
-    const sclera = new THREE.SphereGeometry(0.105, 11, 7);
-    b.add(sclera, { color: 0xfffcf4, bone: eye, part: FIXED, matrix: mat(ex, ey, ez, 0, 0, 0, 1, 1.06, 1) });
+    const sclera = new THREE.SphereGeometry(0.108, D.eye[0], D.eye[1]);
+    // a hint of cool shading toward the eye rim so the eyeball reads round
+    b.add(sclera, {
+      color: 0xfffcf4, bone: eye, part: FIXED, matrix: mat(ex, ey, ez, 0, 0, 0, 1, 1.06, 1),
+      colorFn: (p, n, out) => out.lerp(SCLERA_RIM, 0.55 * smoothstep(0.55, 0.05, n.z)),
+    });
     sclera.dispose();
-    const disc = new THREE.SphereGeometry(1, 9, 3, 0, Math.PI * 2, 0, Math.PI / 2);
-    // iris + pupil sit on the front of the eyeball; they rotate around the eye center
-    b.add(disc, { color: 0x4b2c1f, bone: pupil, part: FIXED, matrix: mat(ex, ey, ez).multiply(mat(0, 0, 0.083, Math.PI / 2, 0, 0, 0.07, 0.03, 0.07)) });
-    b.add(disc, { color: 0x140d0c, bone: pupil, part: FIXED, matrix: mat(ex, ey, ez).multiply(mat(0, 0, 0.095, Math.PI / 2, 0, 0, 0.046, 0.03, 0.046)) });
+    const disc = new THREE.SphereGeometry(1, D.iris, 4, 0, Math.PI * 2, 0, Math.PI / 2);
+    // big glossy iris (warm brown, amber glow at the bottom, dark limbal ring) + a big pupil:
+    // they sit on the front of the eyeball and rotate around the eye center
+    b.add(disc, {
+      bone: pupil, part: FIXED, matrix: mat(ex, ey, ez).multiply(mat(0, 0, 0.084, Math.PI / 2, 0, 0, 0.075, 0.03, 0.075)),
+      colorFn: (p, _n, out) => {
+        const dx = p.x - ex, dy = p.y - ey, r = Math.sqrt(dx * dx + dy * dy) / 0.075;
+        out.copy(IRIS_IN).lerp(IRIS_GLOW, smoothstep(0.1, -0.06, dy / 0.075) * smoothstep(0.45, 0.8, r) * 0.75);
+        out.lerp(IRIS_RIM, smoothstep(0.78, 0.98, r));
+      },
+    });
+    b.add(disc, { color: 0x120b0b, bone: pupil, part: FIXED, matrix: mat(ex, ey, ez).multiply(mat(0, 0, 0.097, Math.PI / 2, 0, 0, 0.055, 0.03, 0.055)) });
     disc.dispose();
-    const hl = new THREE.SphereGeometry(1, 6, 4);
-    b.add(hl, { color: 0xffffff, bone: pupil, part: FIXED, matrix: mat(ex + 0.024 * side, ey + 0.028, ez + 0.118, 0, 0, 0, 0.022, 0.022, 0.012) });
-    b.add(hl, { color: 0xffffff, bone: pupil, part: FIXED, matrix: mat(ex - 0.022 * side, ey - 0.024, ez + 0.116, 0, 0, 0, 0.011, 0.011, 0.007) });
+    const hl = new THREE.SphereGeometry(1, D.glint[0], D.glint[1]);
+    b.add(hl, { color: 0xffffff, bone: pupil, part: FIXED, matrix: mat(ex + 0.026 * side, ey + 0.03, ez + 0.12, 0, 0, 0, 0.03, 0.03, 0.012) });
+    b.add(hl, { color: 0xffffff, bone: pupil, part: FIXED, matrix: mat(ex - 0.024 * side, ey - 0.027, ez + 0.117, 0, 0, 0, 0.012, 0.012, 0.007) });
     hl.dispose();
-    const lidG = new THREE.SphereGeometry(0.113, 11, 3, 0, Math.PI * 2, 0, Math.PI / 2);
+    const lidG = new THREE.SphereGeometry(0.116, D.lid[0], D.lid[1], 0, Math.PI * 2, 0, Math.PI / 2);
     b.add(lidG, { color: 0xffffff, bone: lid, part: [1, 0, 0, 0], matrix: mat(ex, ey, ez, 0, 0, 0, 1, 1.06, 1) });
     lidG.dispose();
   }
 
   // --- mouth: a smile arc + an "O" that pops open for surprise / effort -------
-  const smile = new THREE.TorusGeometry(0.048, 0.012, 4, 10, Math.PI * 0.75);
+  const smile = new THREE.TorusGeometry(0.046, 0.0125, D.smile[0], D.smile[1], Math.PI * 0.75);
   b.add(smile, { color: 0x4a1f1c, bone: B.smile, part: FIXED, matrix: mat(0, 1.305, 0.33, 0.29, 0, -Math.PI / 2 - Math.PI * 0.375) });
   smile.dispose();
-  const oMouth = new THREE.SphereGeometry(0.05, 8, 5);
+  const oMouth = new THREE.SphereGeometry(0.05, D.mouth[0], D.mouth[1]);
   b.add(oMouth, { color: 0x6e2226, bone: B.mouthO, part: FIXED, matrix: mat(0, 1.275, 0.318, 0.29, 0, 0, 1, 1, 0.45) });
   oMouth.dispose();
-  const tongue = new THREE.SphereGeometry(0.028, 6, 4);
+  const tongue = new THREE.SphereGeometry(0.028, D.tongue[0], D.tongue[1]);
   b.add(tongue, { color: 0xe86a74, bone: B.mouthO, part: FIXED, matrix: mat(0, 1.256, 0.33, 0.29, 0, 0, 1, 0.6, 0.5) });
   tongue.dispose();
 
   // --- Luca crest, cheek frills, dorsal fin, (hidden) tail --------------------
-  const crest = extrudeFin(finShape(0.5, 0.22, 3), 0.06);
+  const crest = extrudeFin(finShape(0.5, 0.22, 3), 0.06, 0.22, lod);
   // shape u runs front→back along -Z, fin sits on the head top, tilted to follow the skull
   b.add(crest, { bone: B.crest, part: SKIN_CREST, matrix: basis([0, 1.7, 0.16], [0, -0.35, -1], [0, 1, -0.3]) });
   crest.dispose();
   for (const side of [1, -1]) {
-    const fin = extrudeFin(finShape(0.24, 0.16, 3, 0.04), 0.026);
+    const fin = extrudeFin(finShape(0.24, 0.16, 3, 0.04), 0.026, 0.16, lod);
     b.add(fin, {
       bone: side > 0 ? B.finL : B.finR, part: SKIN_CREST,
       matrix: basis([0.27 * side, 1.46, -0.06], [side, 0.45, -0.3], [-0.25 * side, 1, -0.25]),
     });
     fin.dispose();
   }
-  const dorsal = extrudeFin(finShape(0.4, 0.13, 3), 0.05);
+  const dorsal = extrudeFin(finShape(0.4, 0.13, 3), 0.05, 0.13, lod);
   b.add(dorsal, { bone: B.dorsal, part: SKIN_CREST, matrix: basis([0, 1.1, -0.2], [0, -1, -0.12], [0, 0.1, -1]) });
   dorsal.dispose();
-  const tailG = new THREE.ConeGeometry(0.11, 0.42, 8, 2);
+  const tailG = new THREE.ConeGeometry(0.11, 0.42, D.tail, 2);
   const tailDir = new THREE.Vector3(0, -0.35, -1).normalize();
   b.add(tailG, {
     bone: B.tail, part: SKIN_BODY,
     matrix: new THREE.Matrix4().compose(new THREE.Vector3(0, 0.42, -0.26).addScaledVector(tailDir, 0.2), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), tailDir), new THREE.Vector3(1, 1, 1)),
   });
   tailG.dispose();
-  const tailFin = extrudeFin(finShape(0.2, 0.12, 3, 0.02), 0.025);
+  const tailFin = extrudeFin(finShape(0.2, 0.12, 3, 0.02), 0.025, 0.12, lod);
   b.add(tailFin, { bone: B.tail, part: SKIN_CREST, matrix: basis([0, 0.33, -0.5], [0, -0.35, -1], [0, 1, 0]) });
   tailFin.dispose();
 
@@ -255,14 +298,14 @@ export function buildBlobGeometry(color: THREE.ColorRepresentation): { geo: THRE
     const dir = hd.clone().sub(sh);
     const len = dir.length();
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-    const arm = new THREE.CylinderGeometry(0.068, 0.072, len, 8, 3, true);
+    const arm = new THREE.CylinderGeometry(0.068, 0.072, len, D.limb, 3, true);
     const m = new THREE.Matrix4().compose(sh.clone().addScaledVector(dir, 0.5), q, new THREE.Vector3(1, 1, 1));
     b.add(arm, { bone: side > 0 ? B.armL : B.armR, part: SKIN_BODY, matrix: m });
     arm.dispose();
-    const hand = new THREE.SphereGeometry(0.088, 8, 6);
+    const hand = new THREE.SphereGeometry(0.09, D.hand[0], D.hand[1]);
     b.add(hand, { bone: side > 0 ? B.handL : B.handR, part: SKIN_BODY, matrix: mat(hd.x, hd.y, hd.z, 0, 0, 0, 1, 0.9, 1.05) });
     hand.dispose();
-    const thumb = new THREE.SphereGeometry(0.036, 6, 4);
+    const thumb = new THREE.SphereGeometry(0.037, D.thumb[0], D.thumb[1]);
     b.add(thumb, { bone: side > 0 ? B.handL : B.handR, part: SKIN_BODY, matrix: mat(hd.x - 0.05 * side, hd.y + 0.03, hd.z + 0.06) });
     thumb.dispose();
   }
@@ -274,11 +317,11 @@ export function buildBlobGeometry(color: THREE.ColorRepresentation): { geo: THRE
     const dir = ft.clone().sub(hp);
     const len = dir.length();
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-    const leg = new THREE.CylinderGeometry(0.09, 0.08, len, 8, 2, true);
+    const leg = new THREE.CylinderGeometry(0.09, 0.08, len, D.limb, 2, true);
     const m = new THREE.Matrix4().compose(hp.clone().addScaledVector(dir, 0.5), q, new THREE.Vector3(1, 1, 1));
     b.add(leg, { bone: side > 0 ? B.legL : B.legR, part: SKIN_BODY, matrix: m });
     leg.dispose();
-    const foot = new THREE.SphereGeometry(0.1, 9, 5);
+    const foot = new THREE.SphereGeometry(0.1, D.foot[0], D.foot[1]);
     b.add(foot, {
       bone: side > 0 ? B.footL : B.footR,
       part: [1, 0, 0.35, 1],
@@ -288,7 +331,7 @@ export function buildBlobGeometry(color: THREE.ColorRepresentation): { geo: THRE
   }
 
   // --- the marker, rigid on the gun bone --------------------------------------
-  addMarker(b, color, { bone: B.gun, part: FIXED }, mat(GUN_BIND[0], GUN_BIND[1], GUN_BIND[2]));
+  addMarker(b, color, { bone: B.gun, part: FIXED }, mat(GUN_BIND[0], GUN_BIND[1], GUN_BIND[2]), lod);
 
   return { geo: b.build(), splatPoints };
 }

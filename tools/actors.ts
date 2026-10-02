@@ -267,7 +267,7 @@ const elimCycle = (d: Demo, dt: number) => {
   else s.mode = "eliminated";
 };
 addDemo("eliminated", lineup, mkState(7.5, ground0, LZ), elimCycle);
-addDemo("wet → sea", lineup, mkState(10, ground0, LZ), (d, _dt, t) => {
+addDemo("wet", lineup, mkState(10, ground0, LZ), (d, _dt, t) => {
   d.st.wetness = Math.max(0, Math.min(1, 0.5 + Math.sin(t * 0.6) * 0.8));
   d.st.coats = [];
 });

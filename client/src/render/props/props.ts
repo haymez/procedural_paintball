@@ -3,11 +3,12 @@
 // packed near-first into one dynamic instance buffer per (kind, LOD), so draw
 // calls stay bounded at 2 per kind. Only the leading (near) instances are
 // drawn into the sun shadow map (onBeforeShadow trims instanceCount).
-// Wind sway, per-instance tint and distance shrink happen in the vertex shader.
+// Foliage is static (no wind sway); per-instance tint and distance shrink
+// happen in the vertex shader.
 import * as THREE from "three";
 import { Biome, GRID_RES, PROP_STRIDE, PropKind, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
 import { makeStyledMaterial, type PatchHooks } from "../patch";
-import { ENV_PARS, NOISE_FNS, WIND_FN } from "../glsl";
+import { ENV_PARS, NOISE_FNS } from "../glsl";
 import { propModels } from "./models";
 import { foliageTextures, LEAF_RES, type FoliageTextures } from "./atlas";
 import type { WorldTextures } from "../worldTextures";
@@ -105,7 +106,7 @@ const VARIETY: Partial<Record<PropKind, [number, number, number]>> = {
 const PROP_VERT_PARS = /* glsl */ `
   attribute vec4 iA; // x y z rot
   attribute vec4 iB; // scale, colorVar, phase, seed
-  attribute vec3 wind;
+  attribute vec3 wind; // (unused sway), leafiness, tint mask
   attribute vec4 tuv; // u v layer flags
   uniform vec2 uFade; // start, end distance
   uniform float uStretch;
@@ -122,7 +123,6 @@ const PROP_VERT_TRANSFORM = /* glsl */ `
     vec3 p = transformed * iB.x * shrink;
     p.y *= 1.0 + iB.y * uStretch;
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-    p += windOffset(iA.xyz, wind.x, wind.y, iB.z, iB.x);
     transformed = iA.xyz + p;
     vUv = tuv;
     #ifndef IS_DEPTH
@@ -254,6 +254,10 @@ function hooks(key: string, tex: FoliageTextures): PatchHooks {
   };
 }
 
+function copyInst(src: Float32Array, i: number, dst: Float32Array, o: number): void {
+  for (let k = 0; k < IF; k++) dst[o + k] = src[i + k];
+}
+
 const ROCK_KINDS = new Set([PropKind.RockSmall, PropKind.RockMedium, PropKind.Boulder]);
 
 /**
@@ -315,13 +319,15 @@ function leafDepthMaterial(env: Record<string, THREE.IUniform>, hk: PatchHooks):
   d.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, env, hk.uniforms ?? {});
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${WIND_FN}\n${PROP_VERT_PARS}`)
+      .replace("#include <common>", `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${PROP_VERT_PARS}`)
       .replace("#include <begin_vertex>", `#include <begin_vertex>\n${PROP_VERT_TRANSFORM}`);
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\nvarying vec4 vUv;\nuniform highp sampler2DArray tLeaf;`)
       .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n  if (vUv.z > 15.5 && texture(tLeaf, vec3(vUv.xy, floor(vUv.z + 0.5) - 16.0)).a < 0.5) discard;`);
   };
   d.defines = { IS_DEPTH: 1 };
+  // PCF sun shadows only read the depth attachment: skip writing packed depth to the unused color one
+  d.colorWrite = false;
   d.customProgramCacheKey = () => hk.key + "-leafdepth";
   return d;
 }
@@ -442,6 +448,9 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
       mesh.receiveShadow = true;
       mesh.name = `props-${PropKind[ps.kind]}-lod${lod}`;
       mesh.matrixAutoUpdate = false;
+      // farther LODs draw after the near scene so their (alpha-tested, overdraw-heavy) leaves
+      // are depth-rejected behind houses, hills and near crowns instead of shaded and then covered
+      mesh.renderOrder = lod;
       group.add(mesh);
       return { mesh, ib };
     };
@@ -536,11 +545,11 @@ export function createProps(world: World, env: Record<string, THREE.IUniform>, o
           } else {
             for (let i = 0; i < data.length; i += IF) {
               const dx = data[i] - cp.x, dz = data[i + 2] - cp.z;
-              const inst = data.subarray(i, i + IF);
-              if (dx * dx + dz * dz < lod0Sq) { arr0.set(inst, n0 * IF); n0++; }
+              // per-instance copies without subarray views (no garbage per rebuild)
+              if (dx * dx + dz * dz < lod0Sq) { copyInst(data, i, arr0, n0 * IF); n0++; }
               else {
-                arr1.set(inst, n1 * IF); n1++;
-                if (inShadow) { tail!.set(inst, nt * IF); nt++; }
+                copyInst(data, i, arr1, n1 * IF); n1++;
+                if (inShadow) { copyInst(data, i, tail!, nt * IF); nt++; }
               }
             }
           }

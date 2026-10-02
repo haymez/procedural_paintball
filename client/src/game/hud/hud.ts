@@ -99,6 +99,9 @@ export class Hud {
   // top
   private timer: El;
   private compass: El;
+  /** Compass width, cached: reading clientWidth every frame after the HUD's style writes forces a layout. */
+  private compassW = 0;
+  private compassRO: ResizeObserver | null = null;
   private compassItems: { el: El; b: number }[] = [];
   private miniCanvas: HTMLCanvasElement;
   private miniCtx: CanvasRenderingContext2D;
@@ -185,6 +188,10 @@ export class Hud {
     const top = el("div", "ih-top");
     this.timer = el("div", "ih-timer card num", "10:00");
     this.compass = el("div", "ih-compass");
+    if (typeof ResizeObserver !== "undefined") {
+      this.compassRO = new ResizeObserver(() => { this.compassW = this.compass.clientWidth; });
+      this.compassRO.observe(this.compass);
+    }
     this.buildCompass();
     top.append(this.timer, this.compass);
     this.root.appendChild(top);
@@ -279,6 +286,11 @@ export class Hud {
     this.compass.appendChild(el("div", "mid"));
   }
 
+  private compassWidth(): number {
+    if (!this.compassRO) return this.compass.clientWidth || 480;
+    return this.compassW || 480;
+  }
+
   private lmScratch: { el: El; x: number; d: number }[] = [];
   private updateCompass(yaw: number, me: PlayerState | undefined): void {
     const heading = bearingOfYaw(yaw);
@@ -287,7 +299,7 @@ export class Hud {
     this.lastHeading = heading;
     this.lastCx = mx;
     this.lastCz = mz;
-    const w = this.compass.clientWidth || 480;
+    const w = this.compassWidth();
     const fov = Math.PI * 0.75;
     const lms = this.lmScratch;
     lms.length = 0;
@@ -352,7 +364,7 @@ export class Hud {
     const me = f.me;
     let n = 0;
     if (me) {
-      const w = this.compass.clientWidth || 480;
+      const w = this.compassWidth();
       const fov = Math.PI * 0.75;
       const heading = bearingOfYaw(f.camYaw);
       for (const p of f.snap.players) {
@@ -1015,6 +1027,7 @@ export class Hud {
   }
 
   dispose(): void {
+    this.compassRO?.disconnect();
     this.root.remove();
   }
 }

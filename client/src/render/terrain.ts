@@ -101,10 +101,17 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
       // until it gets really steep, with rock showing in vertical runnels. ---
       vec2 fd = normalize(n.xz + vec2(1e-4));
       float along = dot(p, vec2(fd.y, -fd.x));                 // horizontal coordinate across a face
-      float runnel = noiseT(vec2(along * 0.09, y * 0.006)).r * 0.65 + noiseT(vec2(along * 0.31, y * 0.02)).b * 0.35;
       float vegK = uClimate.x;
-      float slopeRock = smoothstep(mix(0.3, 0.46, vegK), mix(0.46, 0.66, vegK), slope + (runnel - 0.5) * mix(0.1, 0.36, vegK));
       float biomeRock = smoothstep(0.35, 0.75, M.r + (nC.r - 0.5) * 0.4) * (1.0 - vegK * 0.55 * smoothstep(0.8, 0.95, n.y) * smoothstep(0.4, 0.7, nC.g + nB.a * 0.4));
+      // runnels only matter where there can be rock: below slope 0.11 the slope rock stays 0 for
+      // any runnel value (lower edge >= 0.3, runnel shifts at most 0.18), so skip the two fetches
+      vec2 rq = vec2(along * 0.09, y * 0.006), rqx = dFdx(rq), rqy = dFdy(rq);
+      float runnel = 0.5;
+      if (slope > 0.11 || biomeRock > 0.002) {
+        const vec2 RQ2 = vec2(0.31 / 0.09, 0.02 / 0.006);
+        runnel = textureGrad(uNoise, rq, rqx, rqy).r * 0.65 + textureGrad(uNoise, rq * RQ2, rqx * RQ2, rqy * RQ2).b * 0.35;
+      }
+      float slopeRock = smoothstep(mix(0.3, 0.46, vegK), mix(0.46, 0.66, vegK), slope + (runnel - 0.5) * mix(0.1, 0.36, vegK));
       float rockW = max(biomeRock, slopeRock);
       float steep = smoothstep(0.25, 0.6, slope);
       rockW *= 1.0 - smoothstep(-0.5, -3.0, y) * 0.6 * (1.0 - steep);
@@ -245,9 +252,11 @@ export function terrainShaderHooks(tex: WorldTextures, paint: Record<string, THR
       // distant vegetated ground: shrub masses so forests and slopes don't read as flat felt
       {
         float veg = (1.0 - sandW) * (1.0 - rockW) * (1.0 - pathW) * (1.0 - paveW) * step(0.3, y);
-        float shrubN = noiseT(p * 0.045 + 3.7).r * 0.6 + noiseT(p * 0.17 + 1.3).a * 0.4;
         float farK = smoothstep(30.0, 120.0, dist);
-        col = mix(col, col * vec3(0.66, 0.78, 0.62), smoothstep(0.5, 0.66, shrubN) * veg * 0.6 * farK);
+        if (veg * farK > 0.0) {
+          float shrubN = textureGrad(uNoise, p * 0.045 + 3.7, pdx * 0.045, pdy * 0.045).r * 0.6 + textureGrad(uNoise, p * 0.17 + 1.3, pdx * 0.17, pdy * 0.17).a * 0.4;
+          col = mix(col, col * vec3(0.66, 0.78, 0.62), smoothstep(0.5, 0.66, shrubN) * veg * 0.6 * farK);
+        }
       }
       // natural, slightly muted greens
       {
@@ -443,6 +452,10 @@ export function createTerrain(world: World, tex: WorldTextures, env: Record<stri
       let lod = 0;
       while (lod < opts.lodDistances.length && d > opts.lodDistances[lod]) lod++;
       lod = Math.min(lod, LOD_STEPS.length - 1);
+      // Draw order: the chunk(s) right around the camera first (a hill in front hides
+      // what's behind it), the rest after the near props and buildings (renderOrder 0)
+      // and before the far foliage LODs, so the splat shader skips ground they cover.
+      ch.mesh.renderOrder = d < 12 ? 0 : 0.5;
       if (lod !== ch.lod) {
         let g = ch.lods[lod];
         if (!g) { g = buildGeometry(ch, lod); ch.lods[lod] = g; }

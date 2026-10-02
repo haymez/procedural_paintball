@@ -10,17 +10,16 @@ Cloudflare Durable Objects. Local-only for now (`npm run dev`).
 
 ## Game design (agreed with the user)
 
-- **Characters**: human-shaped soft blobs (not humans), pastel, a small
-  sea-monster crest/fin as a *Luca* nod. When submerged they shimmer into a
-  scaly teal "sea monster" skin (cosmetic only).
+- **Characters**: human-shaped soft blobs (not humans), pastel, cute, a small
+  sea-monster crest/fin as a *Luca* nod. They keep their own color in the
+  water (no skin change); the fins just fan out and a little tail paddles.
 - **Paint is health**: each hit coats you in the shooter's color; 3 coats =
   eliminated (splat into a puddle, then after ~3 s a **sky drop**, below).
   **Paint wears off** on its own: ~5 s
   after the last hit, one coat flakes off every ~4 s. **Water washes it off
   faster** (~1.5 s submerged per coat) — but swimming is slow, you can't
   shoot, and breath is limited: ~8 s submerged, then you're forced to the
-  surface gasping and can't dive again for a few seconds. Submerged players
-  shimmer into a dark teal-navy "sea monster" skin (cosmetic only).
+  surface gasping and can't dive again for a few seconds.
 - **Sky drop** (every spawn, match start included): you appear ~170–215 m
   over the middle of the island and glide down like a flying squirrel (limbs
   spread, skin flaps; `Move.Glide`), controlled like Apex Legends' skydive:

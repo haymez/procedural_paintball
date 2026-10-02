@@ -35,8 +35,6 @@ export interface GameOptions {
 
 /** A frame gap longer than this (s) is a stall (hidden tab, debugger, GC storm): resync instead of catching up. */
 const RESYNC_GAP = 0.25;
-/** Subtitles for a sky-drop touchdown. */
-const LANDING_QUIPS = ["nailed the landing", "graceful. mostly.", "boing!", "10 / 10 from the judges", "that'll buff out", "gummy physics"];
 /** Seconds the last attacker stays marked. */
 const ATTACKER_SHOW = 4.5;
 
@@ -815,7 +813,6 @@ export class Game {
       if (local) {
         this.rig.shake(0.4);
         this.rig.dip(22);
-        if (!(b & Fx.WaterEnter)) this.hud.bigText("Splat!", LANDING_QUIPS[(Math.random() * LANDING_QUIPS.length) | 0]);
       }
     }
     if (b & Fx.Submerge) sfx("submerge", e);

@@ -17,7 +17,9 @@ export function markerTint(color: THREE.ColorRepresentation): THREE.Color {
 }
 
 /** Bake a marker into a builder (used by the blob so it costs no extra draw call). */
-export function addMarker(b: MeshBuilder, color: THREE.ColorRepresentation, base: Omit<PartOpts, "color" | "matrix">, root?: THREE.Matrix4): void {
+export function addMarker(b: MeshBuilder, color: THREE.ColorRepresentation, base: Omit<PartOpts, "color" | "matrix">, root?: THREE.Matrix4, lod = 0): void {
+  // radial segments: smooth up close, about half when far away
+  const n = (hi: number) => (lod ? Math.max(5, Math.round(hi * 0.5)) : hi);
   const body = markerTint(color);
   const light = new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45);
   const dark = 0x3b3440;
@@ -28,25 +30,25 @@ export function addMarker(b: MeshBuilder, color: THREE.ColorRepresentation, base
     g.dispose();
   };
   // receiver: fat rounded capsule
-  add(new THREE.CapsuleGeometry(0.056, 0.2, 3, 8), body, mat(0, 0.015, 0.1, Math.PI / 2, 0, 0, 0.85, 1, 1.15));
+  add(new THREE.CapsuleGeometry(0.056, 0.2, lod ? 2 : 4, n(12)), body, mat(0, 0.015, 0.1, Math.PI / 2, 0, 0, 0.85, 1, 1.15));
   // cream stripe band on the receiver
-  add(new THREE.CylinderGeometry(0.052, 0.052, 0.035, 8, 1), cream, mat(0, 0.015, 0.2, Math.PI / 2, 0, 0, 1, 1, 1.2));
+  add(new THREE.CylinderGeometry(0.052, 0.052, 0.035, n(12), 1), cream, mat(0, 0.015, 0.2, Math.PI / 2, 0, 0, 1, 1, 1.2));
   // barrel
-  add(new THREE.CylinderGeometry(0.023, 0.026, 0.3, 8, 1, true), dark, mat(0, 0.03, 0.36, Math.PI / 2));
+  add(new THREE.CylinderGeometry(0.023, 0.026, 0.3, n(10), 1, true), dark, mat(0, 0.03, 0.36, Math.PI / 2));
   // muzzle ring (colored lip)
-  add(new THREE.CylinderGeometry(0.036, 0.034, 0.05, 8, 1), light, mat(0, 0.03, 0.5, Math.PI / 2));
+  add(new THREE.CylinderGeometry(0.036, 0.034, 0.05, n(12), 1), light, mat(0, 0.03, 0.5, Math.PI / 2));
   // hopper neck + bulb + lid
-  add(new THREE.CylinderGeometry(0.024, 0.03, 0.06, 6, 1, true), dark, mat(0, 0.085, 0.07));
-  add(new THREE.SphereGeometry(0.09, 10, 7), light, mat(0, 0.155, 0.05, 0, 0, 0, 0.95, 0.85, 1.25));
-  add(new THREE.CylinderGeometry(0.035, 0.04, 0.025, 8, 1), body, mat(0, 0.23, 0.04));
+  add(new THREE.CylinderGeometry(0.024, 0.03, 0.06, n(6), 1, true), dark, mat(0, 0.085, 0.07));
+  add(new THREE.SphereGeometry(0.09, n(16), lod ? 5 : 11), light, mat(0, 0.155, 0.05, 0, 0, 0, 0.95, 0.85, 1.25));
+  add(new THREE.CylinderGeometry(0.035, 0.04, 0.025, n(12), 1), body, mat(0, 0.23, 0.04));
   // grip + trigger guard
   add(new THREE.BoxGeometry(0.042, 0.11, 0.05), dark, mat(0, -0.06, -0.005, -0.25));
-  add(new THREE.TorusGeometry(0.026, 0.007, 4, 8, Math.PI), dark, mat(0, -0.04, 0.05, 0, Math.PI / 2, Math.PI));
+  add(new THREE.TorusGeometry(0.026, 0.007, lod ? 3 : 4, lod ? 4 : 8, Math.PI), dark, mat(0, -0.04, 0.05, 0, Math.PI / 2, Math.PI));
   // foregrip
-  add(new THREE.CylinderGeometry(0.02, 0.024, 0.08, 6, 1), dark, mat(0, -0.04, 0.2));
+  add(new THREE.CylinderGeometry(0.02, 0.024, 0.08, n(6), 1), dark, mat(0, -0.04, 0.2));
   // air tank (stock)
-  add(new THREE.CapsuleGeometry(0.037, 0.16, 2, 8), 0xd7ebe6, mat(0, 0.0, -0.14, Math.PI / 2));
-  add(new THREE.CylinderGeometry(0.039, 0.039, 0.03, 8, 1), body, mat(0, 0.0, -0.06, Math.PI / 2));
+  add(new THREE.CapsuleGeometry(0.037, 0.16, lod ? 1 : 3, n(10)), 0xd7ebe6, mat(0, 0.0, -0.14, Math.PI / 2));
+  add(new THREE.CylinderGeometry(0.039, 0.039, 0.03, n(10), 1), body, mat(0, 0.0, -0.06, Math.PI / 2));
 }
 
 /** Standalone marker mesh (showcase, pickups, dropped weapons). */

@@ -224,6 +224,7 @@ interface Opening {
 export function createCaves(world: World, env: Record<string, THREE.IUniform>, sdfIn?: CaveSdf, terrainMaterial?: THREE.Material) {
   const group = new THREE.Group();
   group.name = "caves";
+  group.matrixAutoUpdate = false; // all cave meshes are static: no per-frame matrix recompose
   // collision-exact SDF from the shared collision module (negative inside the air)
   const fullSdf: CaveSdf = sdfIn ?? ((x, y, z) => collideCaveSdf(world, x, y, z));
   const shellSdf: CaveSdf = sdfIn ?? ((x, y, z) => caveShellSdf(world, x, y, z));
@@ -712,6 +713,7 @@ export function createCaves(world: World, env: Record<string, THREE.IUniform>, s
         mesh.name = "cave-rock";
         mesh.renderOrder = 1; // after the terrain, so the hidden interior is depth-rejected
         mesh.castShadow = true;
+        mesh.matrixAutoUpdate = false;
         group.add(mesh);
         const cb = g.boundingBox!.clone();
         const nearOpening = openings.some((o) => cb.distanceToPoint(new THREE.Vector3(o.px, o.py, o.pz)) < 45);
@@ -731,6 +733,7 @@ export function createCaves(world: World, env: Record<string, THREE.IUniform>, s
           pm.name = "cave-mouth-terrain";
           pm.castShadow = true;
           pm.receiveShadow = true;
+          pm.matrixAutoUpdate = false;
           group.add(pm);
         }
       }
@@ -831,6 +834,7 @@ export function createCaves(world: World, env: Record<string, THREE.IUniform>, s
       const mesh = new THREE.Mesh(g, rockMat);
       mesh.name = "cave-detail";
       mesh.renderOrder = 1;
+      mesh.matrixAutoUpdate = false;
       group.add(mesh);
       chunks.push({ mesh, box: g.boundingBox!.clone(), nearOpening: true, cave: ci });
     }
@@ -847,6 +851,7 @@ export function createCaves(world: World, env: Record<string, THREE.IUniform>, s
       const mm = new THREE.Mesh(mg, glowMat);
       mm.name = "cave-glow";
       mm.renderOrder = 1;
+      mm.matrixAutoUpdate = false;
       group.add(mm);
       chunks.push({ mesh: mm, box: mg.boundingBox!.clone(), nearOpening: false, cave: ci });
     }
@@ -871,6 +876,8 @@ export function createCaves(world: World, env: Record<string, THREE.IUniform>, s
         shaft.position.set(o.px, o.py - 0.6, o.pz);
       }
       shaft.renderOrder = 6;
+      shaft.updateMatrix();
+      shaft.matrixAutoUpdate = false;
       shaft.name = "cave-shaft";
       disposables.push(geo);
       group.add(shaft);

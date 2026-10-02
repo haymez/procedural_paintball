@@ -2,7 +2,7 @@
 // handles lights, cascaded sun shadows, instancing plumbing) with our own
 // lighting equation and injectable shader hooks.
 import * as THREE from "three";
-import { CLOUD_DENSITY_FN, ENV_PARS, NOISE_FNS, STYLE_LIGHT_PARS, WIND_FN } from "./glsl";
+import { CLOUD_DENSITY_FN, ENV_PARS, NOISE_FNS, STYLE_LIGHT_PARS } from "./glsl";
 import { worldRamp } from "./style";
 import { WORLD_HALF, WORLD_SIZE } from "../../../shared/world/types";
 
@@ -23,16 +23,23 @@ if (uCanopyP.x > 0.0) {
   vec4 C0 = texture2D(uCanopy, canopyUV(vWPos.xz));
   float over = C0.g - vWPos.y;
   float below = (1.0 - smoothstep(C0.g, C0.b, vWPos.y)) * (1.0 - smoothstep(25.0, 45.0, over));
+  vec2 off = uSunDir.xz / max(uSunDir.y, 0.3) * clamp(over, 0.0, 14.0);
+  // sun-fleck noise coords (still canopy: the flecks stay put) and their screen derivatives,
+  // taken here in uniform control flow so the fetches below can sit behind branches
+  vec2 fp = (vWPos.xz + off) * 0.21;
+  vec2 fpx = dFdx(fp), fpy = dFdy(fp);
   if (below > 0.0 && C0.r + C0.a > 0.004) {
-    vec2 off = uSunDir.xz / max(uSunDir.y, 0.3) * clamp(over, 0.0, 14.0);
     float cov = texture2D(uCanopy, canopyUV(vWPos.xz + off)).r * below;
     float reg = C0.a * below;
-    vec2 fp = (vWPos.xz + off) * 0.21 + uWind * sin(uTime * 0.6) * 0.25;
-    float fl = smoothstep(0.6, 0.7, noiseT(fp).r * 0.6 + noiseT(fp * 2.3 + 0.37).b * 0.4);
-    float farK = smoothstep(uCanopyP.y * 0.6, uCanopyP.y, length(vWPos - cameraPosition));
-    float sunCut = clamp(cov * mix(0.6, 0.94, farK) * (1.0 - fl * 0.9) * uCanopyP.x, 0.0, 1.0);
-    reflectedLight.directDiffuse *= 1.0 - sunCut;
-    reflectedLight.directSpecular *= 1.0 - sunCut;
+    // the flecks only modulate how much direct sun the crowns cut: skip them where there's none to cut
+    vec3 direct = reflectedLight.directDiffuse + reflectedLight.directSpecular;
+    if (cov > 0.0 && max(direct.r, max(direct.g, direct.b)) > 0.0) {
+      float fl = smoothstep(0.6, 0.7, textureGrad(uNoise, fp, fpx, fpy).r * 0.6 + textureGrad(uNoise, fp * 2.3 + 0.37, fpx * 2.3, fpy * 2.3).b * 0.4);
+      float farK = smoothstep(uCanopyP.y * 0.6, uCanopyP.y, length(vWPos - cameraPosition));
+      float sunCut = clamp(cov * mix(0.6, 0.94, farK) * (1.0 - fl * 0.9) * uCanopyP.x, 0.0, 1.0);
+      reflectedLight.directDiffuse *= 1.0 - sunCut;
+      reflectedLight.directSpecular *= 1.0 - sunCut;
+    }
     float amb = clamp((cov * 0.45 + reg * 0.55) * uCanopyP.x, 0.0, 1.0);
     reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.72, 0.8, 0.7), amb);
     reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.02, 0.05, 0.025) * amb;
@@ -129,7 +136,7 @@ export function applyPatch(m: THREE.Material, env: Record<string, THREE.IUniform
     let fs = shader.fragmentShader;
     vs = vs.replace(
       "#include <common>",
-      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${WIND_FN}\n${CLOUD_DENSITY_FN}\nvarying vec3 vWPos;\nvarying float vCloudSh;\n${hooks.vertexPars ?? ""}`,
+      `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${CLOUD_DENSITY_FN}\nvarying vec3 vWPos;\nvarying float vCloudSh;\n${hooks.vertexPars ?? ""}`,
     );
     vs = vs.replace("#include <beginnormal_vertex>", `#include <beginnormal_vertex>\n${hooks.vertexNormal ?? ""}`);
     vs = vs.replace("#include <begin_vertex>", `#include <begin_vertex>\n${hooks.vertexTransform ?? ""}`);
@@ -159,7 +166,7 @@ export function makeDepthMaterial(env: Record<string, THREE.IUniform>, hooks: Pa
   d.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, env, vhooks.uniforms ?? {});
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${WIND_FN}\n${vhooks.vertexPars ?? ""}`)
+      .replace("#include <common>", `#include <common>\n${ENV_PARS}\n${NOISE_FNS}\n${vhooks.vertexPars ?? ""}`)
       .replace("#include <begin_vertex>", `#include <begin_vertex>\n${vhooks.vertexTransform ?? ""}`);
     shader.fragmentShader = shader.fragmentShader.replace("#include <common>", `#include <common>\n${ENV_PARS}`);
   };

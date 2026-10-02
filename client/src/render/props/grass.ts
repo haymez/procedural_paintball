@@ -6,7 +6,7 @@
 // shader places each blade on the terrain (world height texture), keeps it
 // only where the ground grows grass (biome density map baked here + the
 // terrain's own sand / rock / path / paving masks and slope), thins it out
-// with distance by rank, bends it with the wind, and colors it from the
+// with distance by rank, leans it (static, no sway) and colors it from the
 // terrain's ground color so the lawn and the ground under it agree.
 import * as THREE from "three";
 import { Biome, CELL, GRID_RES, NO_WATER, WORLD_HALF, WORLD_SIZE, type World } from "../../../../shared/world/types";
@@ -204,11 +204,9 @@ function grassHooks(world: World, tex: WorldTextures, map: THREE.DataTexture, op
         float k = clamp((keep - bp.z) / 0.03, 0.0, 1.0) * (1.0 - smoothstep(R * 0.8, R, dist));
         float h1 = gHash(gSeed * 91.7 + 3.1), h2 = gHash(gSeed * 47.3 + 7.7), h3 = gHash(gSeed * 13.1 + 1.3);
         float h = mix(0.09, 0.33, D.b) * (0.55 + 0.9 * h1 * h1) * k;
-        // wind: rolling gusts across the field plus per-blade flutter
-        vec2 wp = gXZ * 0.035 - uWind * uTime * 0.35;
-        float gust = noiseT(wp * 0.25).r * 0.7 + noiseT(wp * 0.6 + 0.3).g * 0.3;
+        // static: each blade leans its own way, the field combed a little downwind
         vec2 lean = gDir * (0.12 + 0.4 * h2);
-        vec2 bend = lean + uWind * (0.15 + 0.85 * smoothstep(0.3, 0.8, gust)) * 0.55 + vec2(sin(uTime * 2.7 + gSeed * 40.0), cos(uTime * 2.3 + gSeed * 31.0)) * 0.05;
+        vec2 bend = lean + uWind * (0.12 + 0.2 * h3);
         float t = bv.x;
         vec3 p = vec3(gXZ.x, y - 0.04, gXZ.y);
         p.xz += bend * h * t * t;

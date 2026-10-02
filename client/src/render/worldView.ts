@@ -9,6 +9,7 @@
 //
 // Add actors to `view.scene`; they get sun shadows, fog and grading for free.
 import * as THREE from "three";
+import "./chunks";
 import { SunLight } from "three/examples/jsm/lights/SunLight.js";
 import { NO_WATER, SEA_LEVEL, type World } from "../../../shared/world/types";
 import { computeEnv, makeEnvUniforms, makeNoiseTexture, type Env, type EnvUniforms } from "./env";
